@@ -128,7 +128,7 @@ public class ConfigResolver {
                     if (found == null) {
                         found = ann;
                     } else {
-                        log.warn("[SqlCircuitBreaker] 多个重载方法均有 @XWFrameworkSqlCircuitBreaker，取第一个匹配，id={}", id);
+                        log.warn("[SqlCircuitBreaker] 多个重载方法均有 SqlCircuitBreaker，取第一个匹配，id={}", id);
                     }
                 }
             }
