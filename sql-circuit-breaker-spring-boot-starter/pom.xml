@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.showingdata.starter.framework</groupId>
+        <artifactId>sql-circuit-breaker-parent</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
+    <name>sql-circuit-breaker-spring-boot-starter</name>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>io.github.showingdata.starter.framework</groupId>
+            <artifactId>sql-circuit-breaker-core</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!--
+            仅需 MyBatis core（拦截器工作在 Executor 层，不依赖 MP）。
+            provided：由业务系统引入，兼容 mybatis-spring-boot-starter 和 mybatis-plus-boot-starter。
+        -->
+        <dependency>
+            <groupId>org.mybatis</groupId>
+            <artifactId>mybatis</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <!--
+            TODO: 替换为实际的消息中心 starter 依赖，并删除 message/MessageCenterClient.java 占位接口
+            <dependency>
+                <groupId>com.yourcompany</groupId>
+                <artifactId>message-center-starter</artifactId>
+                <version>${message-center.version}</version>
+            </dependency>
+        -->
+    </dependencies>
+</project>
