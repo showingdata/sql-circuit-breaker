@@ -1,4 +1,4 @@
-# 基于分布式微服务架构中的熔断思想  设计一款 SQL熔断器 springboot-stater
+# 基于分布式微服务架构中的熔断器思想  设计一款 SQL熔断器 springboot-stater
 
 > 基于 MyBatis / MyBatis-Plus Interceptor 的 SQL 超时熔断 SDK
 
