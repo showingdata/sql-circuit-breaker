@@ -71,6 +71,65 @@ public class SqlCircuitBreakerContext {
         cfg.setSelectTimeoutMs(selectMs).setInsertTimeoutMs(insertMs).setUpdateTimeoutMs(updateMs).setDeleteTimeoutMs(deleteMs);
         set(cfg);
     }
+    /**
+     * 快捷方法：覆盖 SELECT 超时阈值
+     */
+    public static void setSelectTimeout(long selectMs) {
+        SqlCircuitBreakerConfig cfg = CTX.get();
+        if (cfg == null) {
+            cfg = new SqlCircuitBreakerConfig();
+        }
+        cfg.setSelectTimeoutMs(selectMs);
+        set(cfg);
+    }
+
+    /**
+     * 快捷方法：覆盖 INSERT 超时阈值
+     */
+    public static void setInsertTimeout(long insertMs) {
+        SqlCircuitBreakerConfig cfg = CTX.get();
+        if (cfg == null) {
+            cfg = new SqlCircuitBreakerConfig();
+        }
+        cfg.setInsertTimeoutMs(insertMs);
+        set(cfg);
+    }
+
+    /**
+     * 快捷方法：覆盖 UPDATE 超时阈值
+     */
+    public static void setUpdateTimeout(long updateMs) {
+        SqlCircuitBreakerConfig cfg = CTX.get();
+        if (cfg == null) {
+            cfg = new SqlCircuitBreakerConfig();
+        }
+        cfg.setUpdateTimeoutMs(updateMs);
+        set(cfg);
+    }
+
+    /**
+     * 快捷方法：覆盖 DELETE 超时阈值
+     */
+    public static void setDeleteTimeout(long deleteMs) {
+        SqlCircuitBreakerConfig cfg = CTX.get();
+        if (cfg == null) {
+            cfg = new SqlCircuitBreakerConfig();
+        }
+        cfg.setDeleteTimeoutMs(deleteMs);
+        set(cfg);
+    }
+
+    /**
+     * 快捷方法：覆盖熔断持续时长
+     */
+    public static void setCircuitOpenMs(long circuitOpenMs) {
+        SqlCircuitBreakerConfig cfg = CTX.get();
+        if (cfg == null) {
+            cfg = new SqlCircuitBreakerConfig();
+        }
+        cfg.setCircuitOpenMs(circuitOpenMs);
+        set(cfg);
+    }
 
     /**
      * 快捷方法：覆盖熔断触发阈值
