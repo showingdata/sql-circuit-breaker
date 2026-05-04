@@ -2,8 +2,6 @@
 
 > 基于 MyBatis / MyBatis-Plus Interceptor 的 SQL 超时熔断 SDK
 
----
-
 ## 快速接入
 
 ### 1. 引入依赖
@@ -32,8 +30,6 @@ sql-circuit-breaker:
 
 接入完成，重启即生效，无需修改任何业务代码。
 
----
-
 ## 1. 背景与目标
 
 ### 1.1 问题
@@ -56,7 +52,6 @@ sql-circuit-breaker:
 | 快速失败 | 熔断期间抛出指定业务异常，记录结构化错误日志 |
 | 消息通知 | 实现 `MessageCenterClient` 接口即可接入自有通知渠道，默认空操作 |
 
----
 
 ## 2. 整体架构
 
@@ -88,7 +83,6 @@ sql-circuit-breaker:
   状态：CLOSED / OPEN
 ```
 
----
 
 ## 3. 核心概念
 
@@ -138,8 +132,6 @@ select * from order where user_id = ? and status = ?
 ```
 ThreadLocal 编程式 > 方法级注解 > 接口级注解 > 全局配置文件
 ```
-
----
 
 ## 4. 使用说明
 
@@ -220,7 +212,7 @@ public class MyMessageCenterClient implements MessageCenterClient {
 
 熔断事件 `CircuitBreakerEvent` 包含：应用名、Mapper 方法、SQL 指纹、SQL 类型、耗时、超时阈值、熔断时长、事件时间等字段。
 
----
+
 
 ## 5. 日志格式
 
@@ -249,7 +241,6 @@ public class MyMessageCenterClient implements MessageCenterClient {
 </logger>
 ```
 
----
 
 ## 6. 注意事项
 
@@ -304,8 +295,6 @@ public class MyMessageCenterClient implements MessageCenterClient {
    全局配置在启动时校验，注解在首次 SQL 执行时校验，ThreadLocal 在调用 `set()` 时立即校验。
 
 9. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
-
----
 
 ## 7. 模块说明
 
