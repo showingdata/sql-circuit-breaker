@@ -10,7 +10,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
 </dependency>
 ```
 
@@ -51,6 +51,7 @@ sql-circuit-breaker:
 | 多级配置 | 全局配置 → Mapper 接口注解 → Mapper 方法注解 → ThreadLocal 编程式覆盖 |
 | 快速失败 | 熔断期间抛出指定业务异常，记录结构化错误日志 |
 | 消息通知 | 实现 `MessageCenterClient` 接口即可接入自有通知渠道，默认空操作 |
+| 多数据源隔离 | 实现 `DataSourceKeyResolver` 接口即可适配任意数据源框架（如 dynamic-datasource），默认基于 MyBatis Environment ID |
 
 
 ## 2. 整体架构
@@ -81,6 +82,10 @@ sql-circuit-breaker:
   （熔断状态存储：内存）            默认 NoOpMessageCenterClient
   SQL指纹 → CircuitBreakerState
   状态：CLOSED / OPEN
+
+DataSourceKeyResolver（可自定义实现）
+默认 DefaultDataSourceKeyResolver（基于 MyBatis Environment ID）
+适配 dynamic-datasource 等运行时切换框架
 ```
 
 
@@ -111,7 +116,7 @@ select * from order where user_id = ? and status = ?
 
 **熔断 Key 的设计：**
 
-熔断 Key 为 `sql_type:fingerprint_md5`，例如 `SELECT:a3f2c1...`，对已提取的 SQL 指纹取 MD5 避免超长 Key。
+熔断 Key 为 `datasource_id:sql_type:fingerprint_md5`，例如 `default:SELECT:a3f2c1...`，前缀数据源标识用于多数据源场景下隔离各数据源的熔断状态，SQL 指纹取 MD5 避免超长 Key。
 
 ### 3.2 熔断状态机
 
@@ -212,6 +217,25 @@ public class MyMessageCenterClient implements MessageCenterClient {
 
 熔断事件 `CircuitBreakerEvent` 包含：应用名、Mapper 方法、SQL 指纹、SQL 类型、耗时、超时阈值、熔断时长、事件时间等字段。
 
+### 4.5 多数据源标识适配（DataSourceKeyResolver）
+
+熔断 Key 中包含数据源标识，用于多数据源场景下隔离各数据源的熔断状态。默认实现 `DefaultDataSourceKeyResolver` 基于 MyBatis `Environment ID`。
+
+若使用 `dynamic-datasource-spring-boot-starter` 等运行时切换框架（所有数据源共用一个 `SqlSessionFactory`，无法通过 Environment ID 区分），可实现 `DataSourceKeyResolver` 接口并注册为 Spring Bean 覆盖默认行为：
+
+```java
+@Component
+public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
+    @Override
+    public String resolve(MappedStatement ms) {
+        // dynamic-datasource 通过 ThreadLocal 记录当前数据源 key
+        String dsKey = DynamicDataSourceContextHolder.peek();
+        return dsKey != null ? dsKey : "master";
+    }
+}
+```
+
+其他框架同理，只需在 `resolve()` 中返回能唯一标识当前数据源的字符串即可。若项目只有单数据源，无需任何配置，默认返回 `"default"`，不受影响。
 
 
 ## 5. 日志格式
@@ -229,8 +253,8 @@ public class MyMessageCenterClient implements MessageCenterClient {
 日志示例：
 
 ```
-[SqlCircuitBreaker] 执行超时 | key=SELECT:a3f2c1d9ef... | mapper=com.example.mapper.OrderMapper.queryByUserId | sql=select * from order where user_id = ? and status = ? | 耗时=32145ms | 超时阈值=10000ms
-[SqlCircuitBreaker] 熔断开启 | key=SELECT:a3f2c1d9ef... | 熔断时长=60000ms | 开始=2026-05-03 10:23:45 | 预计恢复=2026-05-03 10:24:45
+[SqlCircuitBreaker] 执行超时 | key=default:SELECT:a3f2c1d9ef... | mapper=com.example.mapper.OrderMapper.queryByUserId | sql=select * from order where user_id = ? and status = ? | 耗时=32145ms | 超时阈值=10000ms
+[SqlCircuitBreaker] 熔断开启 | key=default:SELECT:a3f2c1d9ef... | 熔断时长=60000ms | 开始=2026-05-03 10:23:45 | 预计恢复=2026-05-03 10:24:45
 ```
 
 如需将 SDK 日志单独隔离，可在 `logback.xml` 中配置独立 Appender：
@@ -296,7 +320,15 @@ public class MyMessageCenterClient implements MessageCenterClient {
 
 10. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
 
-11. **多数据源场景需配置 Environment ID**：熔断 Key 包含数据源标识，可保证不同数据源的熔断状态互不干扰。多数据源时需为每个 `SqlSessionFactory` 显式设置不同的 `environment id`，否则所有数据源共用 `default` 标识，熔断状态无法隔离：
+11. **多数据源场景的熔断隔离**：熔断 Key 包含数据源标识，保证不同数据源的熔断状态互不干扰。根据项目使用的多数据源框架选择适配方式：
+
+    **方式一（推荐）：实现 `DataSourceKeyResolver` 接口**
+
+    适用于 `dynamic-datasource-spring-boot-starter`、Druid 多数据源等运行时切换框架，声明 Bean 覆盖默认实现即可（参见 [4.5 节](#45-多数据源标识适配datasourcekeyresolver)）。
+
+    **方式二：配置 MyBatis Environment ID**
+
+    适用于为每个业务库独立创建 `SqlSessionFactory` 的场景，需为每个工厂显式设置不同的 `environment id`：
 
     ```java
     @Bean
@@ -316,7 +348,7 @@ public class MyMessageCenterClient implements MessageCenterClient {
     }
     ```
 
-    单数据源无需任何额外配置，默认使用 `default` 作为标识，不受影响。
+    单数据源无需任何额外配置，默认使用 `"default"` 作为标识，不受影响。
 
 ## 7. 模块说明
 
@@ -333,5 +365,7 @@ public class MyMessageCenterClient implements MessageCenterClient {
 | `SqlFingerprintUtils` | SQL 指纹提取 |
 | `CircuitBreakerEvent` | 熔断事件 DTO |
 | `MessageCenterClient` | 消息通知扩展接口，默认空实现 |
+| `DataSourceKeyResolver` | 数据源标识解析扩展接口，用于多数据源熔断隔离 |
+| `DefaultDataSourceKeyResolver` | 默认实现，基于 MyBatis Environment ID |
 | `SqlCircuitBreakerException` | 熔断快速失败异常 |
 | `SqlCircuitBreakerAutoConfiguration` | Spring Boot 自动装配 |

@@ -8,6 +8,7 @@ import io.github.showingdata.starter.framework.circuitbreaker.context.SqlCircuit
 import io.github.showingdata.starter.framework.circuitbreaker.config.ConfigResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.config.ResolvedConfig;
 import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitBreakerProperties;
+import io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.message.MessageCenterClient;
 import io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry;
 import org.apache.ibatis.cache.CacheKey;
@@ -79,12 +80,15 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
 
     private final String applicationName;
 
-    public SqlCircuitBreakerInterceptor(SqlCircuitBreakerProperties props, CircuitBreakerRegistry registry, MessageCenterClient messageCenterClient, ConfigResolver configResolver, String applicationName) {
+    private final DataSourceKeyResolver dataSourceKeyResolver;
+
+    public SqlCircuitBreakerInterceptor(SqlCircuitBreakerProperties props, CircuitBreakerRegistry registry, MessageCenterClient messageCenterClient, ConfigResolver configResolver, String applicationName, DataSourceKeyResolver dataSourceKeyResolver) {
         this.props = props;
         this.registry = registry;
         this.messageCenterClient = messageCenterClient;
         this.configResolver = configResolver;
         this.applicationName = applicationName;
+        this.dataSourceKeyResolver = dataSourceKeyResolver;
     }
 
     @Override
@@ -109,9 +113,8 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
             String fingerprint = SqlFingerprintUtils.extract(boundSql.getSql());
 
             // 步骤5：生成熔断 key = 数据源ID + SQL类型 + 指纹的 MD5，数据源ID 隔离多数据源场景下的熔断状态
-            String envId = ms.getConfiguration().getEnvironment() != null
-                    ? ms.getConfiguration().getEnvironment().getId() : "default";
-            String circuitKey = envId + ":" + sqlType.name() + ":" + SqlFingerprintUtils.hash(fingerprint);
+            String dsKey = dataSourceKeyResolver.resolve(ms);
+            String circuitKey = (dsKey != null ? dsKey : "default") + ":" + sqlType.name() + ":" + SqlFingerprintUtils.hash(fingerprint);
 
             // 步骤6：按优先级解析配置（ThreadLocal > 方法注解 > 接口注解 > 全局配置）
             ResolvedConfig config = configResolver.resolve(ms, sqlType);
