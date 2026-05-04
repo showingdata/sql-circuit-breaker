@@ -271,20 +271,20 @@ public class MyMessageCenterClient implements MessageCenterClient {
 
 4. **SQL 指纹碰撞**：极少数情况下不同 SQL 结构会产生相同指纹，可根据实际需要在指纹前拼接 `mapperId` 降低碰撞概率。
 
-4. **熔断粒度**：当前粒度是 `SQL类型:SQL指纹`。若需要更细粒度（如按 mapperId + SQL），可在 circuitKey 中加入 `ms.getId()`。
+5. **熔断粒度**：当前粒度是 `数据源ID:SQL类型:SQL指纹`。若需要更细粒度（如按 mapperId + SQL），可在 circuitKey 中加入 `ms.getId()`。
 
-5. **不对异常熔断**：只对超时熔断，SQL 执行抛出的其他异常（如连接异常、语法错误）不纳入熔断计数，避免误判。
+6. **不对异常熔断**：只对超时熔断，SQL 执行抛出的其他异常（如连接异常、语法错误）不纳入熔断计数，避免误判。
 
-6. **消息通知只发一次**：消息通知仅在熔断首次打开时触发，快速失败路径不发消息，避免高并发下消息风暴。
+7. **消息通知只发一次**：消息通知仅在熔断首次打开时触发，快速失败路径不发消息，避免高并发下消息风暴。
 
-7. **`SELECT ... FOR UPDATE` 误判风险**：MyBatis 根据 XML 标签确定 SQL 类型，`SELECT ... FOR UPDATE` 会被识别为 SELECT，走宽松阈值。建议对此类方法单独加注解收紧阈值：
+8. **`SELECT ... FOR UPDATE` 误判风险**：MyBatis 根据 XML 标签确定 SQL 类型，`SELECT ... FOR UPDATE` 会被识别为 SELECT，走宽松阈值。建议对此类方法单独加注解收紧阈值：
 
    ```java
    @SqlCircuitBreaker(selectTimeout = 3000, failureThreshold = 1)
    List<Order> selectForUpdate(Long userId);
    ```
 
-8. **三层配置校验**：
+9. **三层配置校验**：
 
    | 配置项 | 合法值 |
    |---|---|
@@ -294,7 +294,29 @@ public class MyMessageCenterClient implements MessageCenterClient {
 
    全局配置在启动时校验，注解在首次 SQL 执行时校验，ThreadLocal 在调用 `set()` 时立即校验。
 
-9. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
+10. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
+
+11. **多数据源场景需配置 Environment ID**：熔断 Key 包含数据源标识，可保证不同数据源的熔断状态互不干扰。多数据源时需为每个 `SqlSessionFactory` 显式设置不同的 `environment id`，否则所有数据源共用 `default` 标识，熔断状态无法隔离：
+
+    ```java
+    @Bean
+    public SqlSessionFactory orderSqlSessionFactory(DataSource orderDataSource) throws Exception {
+        MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
+        factory.setDataSource(orderDataSource);
+        factory.setEnvironment("orderDB");  // 必须设置，且各数据源不能重复
+        return factory.getObject();
+    }
+
+    @Bean
+    public SqlSessionFactory userSqlSessionFactory(DataSource userDataSource) throws Exception {
+        MybatisSqlSessionFactoryBean factory = new MybatisSqlSessionFactoryBean();
+        factory.setDataSource(userDataSource);
+        factory.setEnvironment("userDB");
+        return factory.getObject();
+    }
+    ```
+
+    单数据源无需任何额外配置，默认使用 `default` 作为标识，不受影响。
 
 ## 7. 模块说明
 

@@ -108,8 +108,10 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
             // 步骤4：提取 SQL 指纹（将参数值替换为 ?，归一化同类 SQL），用于日志展示
             String fingerprint = SqlFingerprintUtils.extract(boundSql.getSql());
 
-            // 步骤5：生成熔断 key = SQL类型 + 指纹的 MD5，避免超长 SQL 导致 key 过长
-            String circuitKey = sqlType.name() + ":" + SqlFingerprintUtils.hash(fingerprint);
+            // 步骤5：生成熔断 key = 数据源ID + SQL类型 + 指纹的 MD5，数据源ID 隔离多数据源场景下的熔断状态
+            String envId = ms.getConfiguration().getEnvironment() != null
+                    ? ms.getConfiguration().getEnvironment().getId() : "default";
+            String circuitKey = envId + ":" + sqlType.name() + ":" + SqlFingerprintUtils.hash(fingerprint);
 
             // 步骤6：按优先级解析配置（ThreadLocal > 方法注解 > 接口注解 > 全局配置）
             ResolvedConfig config = configResolver.resolve(ms, sqlType);
