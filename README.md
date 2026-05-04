@@ -266,7 +266,19 @@ public class MyMessageCenterClient implements MessageCenterClient {
    }
    ```
 
-3. **SQL 指纹碰撞**：极少数情况下不同 SQL 结构会产生相同指纹，可根据实际需要在指纹前拼接 `mapperId` 降低碰撞概率。
+3. **`@SqlCircuitBreaker` 只能加在 Mapper 接口或接口方法上**：拦截器基于 `MappedStatement` 解析注解，只会在 Mapper 接口类和接口方法上查找，加在 Service 或实现类上不会生效。若需要在 Service 层控制，请使用 `SqlCircuitBreakerContext` ThreadLocal 编程式方式：
+
+   ```java
+   // ✅ 有效
+   @SqlCircuitBreaker(selectTimeout = 5000)
+   public interface OrderMapper extends BaseMapper<Order> { ... }
+
+   // ❌ 无效，不会被识别
+   @SqlCircuitBreaker(selectTimeout = 5000)
+   public class OrderService { ... }
+   ```
+
+4. **SQL 指纹碰撞**：极少数情况下不同 SQL 结构会产生相同指纹，可根据实际需要在指纹前拼接 `mapperId` 降低碰撞概率。
 
 4. **熔断粒度**：当前粒度是 `SQL类型:SQL指纹`。若需要更细粒度（如按 mapperId + SQL），可在 circuitKey 中加入 `ms.getId()`。
 
