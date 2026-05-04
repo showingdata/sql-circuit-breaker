@@ -12,7 +12,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 
