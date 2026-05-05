@@ -6,7 +6,7 @@
 
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-parent</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
     <packaging>pom</packaging>
     <name>sql-circuit-breaker-parent</name>
     <description>基于 MyBatis / MyBatis-Plus 拦截器的 SQL 超时熔断 Spring Boot Starter</description>
