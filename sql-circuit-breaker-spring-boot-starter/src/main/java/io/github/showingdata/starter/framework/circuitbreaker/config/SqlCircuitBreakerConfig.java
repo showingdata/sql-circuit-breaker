@@ -46,7 +46,18 @@ public class SqlCircuitBreakerConfig {
     private Long circuitOpenMs;
 
     /**
-     * 触发熔断所需的连续超时次数，null 表示不覆盖
+     * SELECT 连续超时触发熔断次数，null 表示不覆盖。优先级高于 failureThreshold。
+     */
+    private Integer selectFailureThreshold;
+
+    /**
+     * DML（INSERT/UPDATE/DELETE）连续超时触发熔断次数，null 表示不覆盖。优先级高于 failureThreshold。
+     */
+    private Integer dmlFailureThreshold;
+
+    /**
+     * 通用连续超时触发熔断次数，null 表示不覆盖。
+     * selectFailureThreshold / dmlFailureThreshold 均为 null 时作为兜底。
      */
     private Integer failureThreshold;
 

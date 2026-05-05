@@ -41,6 +41,10 @@ public class SqlCircuitBreakerContext {
             errors.add("deleteTimeoutMs 必须 > 0，当前值：" + config.getDeleteTimeoutMs());
         if (config.getCircuitOpenMs() != null && config.getCircuitOpenMs() <= 0)
             errors.add("circuitOpenMs 必须 > 0，当前值：" + config.getCircuitOpenMs());
+        if (config.getSelectFailureThreshold() != null && config.getSelectFailureThreshold() < 1)
+            errors.add("selectFailureThreshold 必须 >= 1，当前值：" + config.getSelectFailureThreshold());
+        if (config.getDmlFailureThreshold() != null && config.getDmlFailureThreshold() < 1)
+            errors.add("dmlFailureThreshold 必须 >= 1，当前值：" + config.getDmlFailureThreshold());
         if (config.getFailureThreshold() != null && config.getFailureThreshold() < 1)
             errors.add("failureThreshold 必须 >= 1，当前值：" + config.getFailureThreshold());
         if (!errors.isEmpty()) {
@@ -132,7 +136,33 @@ public class SqlCircuitBreakerContext {
     }
 
     /**
-     * 快捷方法：覆盖熔断触发阈值
+     * 快捷方法：覆盖 SELECT 熔断触发阈值
+     */
+    public static void setSelectFailureThreshold(int threshold) {
+        SqlCircuitBreakerConfig cfg = CTX.get();
+        if (cfg == null) {
+            cfg = new SqlCircuitBreakerConfig();
+        }
+        cfg.setSelectFailureThreshold(threshold);
+        set(cfg);
+    }
+
+    /**
+     * 快捷方法：覆盖 DML（INSERT/UPDATE/DELETE）熔断触发阈值
+     */
+    public static void setDmlFailureThreshold(int threshold) {
+        SqlCircuitBreakerConfig cfg = CTX.get();
+        if (cfg == null) {
+            cfg = new SqlCircuitBreakerConfig();
+        }
+        cfg.setDmlFailureThreshold(threshold);
+        set(cfg);
+    }
+
+    /**
+     * 快捷方法：设置通用熔断触发阈值（SELECT 和 DML 的兜底）。
+     * 若已通过 setSelectFailureThreshold / setDmlFailureThreshold 设置了特定类型阈值，
+     * 特定值优先级更高，此方法的设置对已设特定类型不生效。
      */
     public static void setFailureThreshold(int failureThreshold) {
         SqlCircuitBreakerConfig cfg = CTX.get();

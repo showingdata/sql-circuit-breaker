@@ -37,7 +37,20 @@ public @interface SqlCircuitBreaker {
     long circuitOpenMs() default -1;
 
     /**
-     * 触发熔断所需的连续超时次数，-1 表示继承上层配置
+     * SELECT 连续超时触发熔断次数，-1 表示继承上层配置。
+     * 优先级高于 failureThreshold，与全局 select-failure-threshold 对应。
+     */
+    int selectFailureThreshold() default -1;
+
+    /**
+     * DML（INSERT/UPDATE/DELETE）连续超时触发熔断次数，-1 表示继承上层配置。
+     * 优先级高于 failureThreshold，与全局 dml-failure-threshold 对应。
+     */
+    int dmlFailureThreshold() default -1;
+
+    /**
+     * 通用连续超时触发熔断次数，-1 表示继承上层配置。
+     * 当 selectFailureThreshold / dmlFailureThreshold 均未设置时作为兜底。
      */
     int failureThreshold() default -1;
 

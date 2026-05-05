@@ -90,6 +90,8 @@ public class ConfigResolver {
         if (ann.updateTimeout() == 0) errors.add("updateTimeout 不能为 0，会导致所有 UPDATE 立即超时");
         if (ann.deleteTimeout() == 0) errors.add("deleteTimeout 不能为 0，会导致所有 DELETE 立即超时");
         if (ann.circuitOpenMs() == 0) errors.add("circuitOpenMs 不能为 0，会导致熔断后立即重置，保护失效");
+        if (ann.selectFailureThreshold() == 0) errors.add("selectFailureThreshold 不能为 0，永远无法触发熔断");
+        if (ann.dmlFailureThreshold() == 0) errors.add("dmlFailureThreshold 不能为 0，永远无法触发熔断");
         if (ann.failureThreshold() == 0) errors.add("failureThreshold 不能为 0，永远无法触发熔断");
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException(
@@ -207,14 +209,24 @@ public class ConfigResolver {
     }
 
     private int mergeFailureThreshold(SqlCommandType sqlType, SqlCircuitBreakerConfig tl, SqlCircuitBreaker method, SqlCircuitBreaker iface) {
-        if (tl != null && tl.getFailureThreshold() != null && tl.getFailureThreshold() > 0) {
-            return tl.getFailureThreshold();
+        boolean isSelect = sqlType == SqlCommandType.SELECT;
+        // ThreadLocal：先找特定类型，再找通用 fallback
+        if (tl != null) {
+            Integer specific = isSelect ? tl.getSelectFailureThreshold() : tl.getDmlFailureThreshold();
+            if (specific != null && specific > 0) return specific;
+            if (tl.getFailureThreshold() != null && tl.getFailureThreshold() > 0) return tl.getFailureThreshold();
         }
-        if (method != null && method.failureThreshold() > 0) {
-            return method.failureThreshold();
+        // 方法注解：先找特定类型，再找通用 fallback
+        if (method != null) {
+            int specific = isSelect ? method.selectFailureThreshold() : method.dmlFailureThreshold();
+            if (specific > 0) return specific;
+            if (method.failureThreshold() > 0) return method.failureThreshold();
         }
-        if (iface != null && iface.failureThreshold() > 0) {
-            return iface.failureThreshold();
+        // 接口注解：先找特定类型，再找通用 fallback
+        if (iface != null) {
+            int specific = isSelect ? iface.selectFailureThreshold() : iface.dmlFailureThreshold();
+            if (specific > 0) return specific;
+            if (iface.failureThreshold() > 0) return iface.failureThreshold();
         }
         return global.getFailureThreshold(sqlType);
     }
