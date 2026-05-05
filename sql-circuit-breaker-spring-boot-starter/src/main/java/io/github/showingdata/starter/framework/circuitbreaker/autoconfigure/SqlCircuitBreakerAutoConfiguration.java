@@ -1,6 +1,7 @@
 package io.github.showingdata.starter.framework.circuitbreaker.autoconfigure;
 
 
+import io.github.showingdata.starter.framework.circuitbreaker.banner.SqlCircuitBreakerBanner;
 import io.github.showingdata.starter.framework.circuitbreaker.config.ConfigResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitBreakerProperties;
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver;
@@ -13,7 +14,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -49,6 +52,11 @@ public class SqlCircuitBreakerAutoConfiguration {
 
     @Value("${spring.application.name:unknown}")
     private String applicationName;
+
+    @Bean
+    public ApplicationListener<ApplicationReadyEvent> sqlCircuitBreakerBannerPrinter() {
+        return event -> SqlCircuitBreakerBanner.print(System.out);
+    }
 
     @Bean
     @ConditionalOnMissingBean
