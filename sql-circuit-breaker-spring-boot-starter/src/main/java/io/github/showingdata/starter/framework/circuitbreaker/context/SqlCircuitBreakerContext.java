@@ -24,29 +24,22 @@ public class SqlCircuitBreakerContext {
     }
 
     /**
-     * ThreadLocal 编程式配置值域校验，规则与全局配置、注解校验对齐：
-     * - timeout：null 表示不覆盖，0 无意义（任何 SQL 都超时），正数合法
+     * ThreadLocal 编程式配置值域校验：
+     * - timeoutMs：null 表示不覆盖，0 无意义（任何 SQL 都超时），正数合法
      * - circuitOpenMs：null 表示不覆盖，0 会导致熔断后立即重置，正数合法
      * - failureThreshold：null 表示不覆盖，0 会导致永远无法触发熔断，正数合法
      */
     private static void validate(SqlCircuitBreakerConfig config) {
         List<String> errors = new ArrayList<>();
-        if (config.getSelectTimeoutMs() != null && config.getSelectTimeoutMs() <= 0)
-            errors.add("selectTimeoutMs 必须 > 0，当前值：" + config.getSelectTimeoutMs());
-        if (config.getInsertTimeoutMs() != null && config.getInsertTimeoutMs() <= 0)
-            errors.add("insertTimeoutMs 必须 > 0，当前值：" + config.getInsertTimeoutMs());
-        if (config.getUpdateTimeoutMs() != null && config.getUpdateTimeoutMs() <= 0)
-            errors.add("updateTimeoutMs 必须 > 0，当前值：" + config.getUpdateTimeoutMs());
-        if (config.getDeleteTimeoutMs() != null && config.getDeleteTimeoutMs() <= 0)
-            errors.add("deleteTimeoutMs 必须 > 0，当前值：" + config.getDeleteTimeoutMs());
-        if (config.getCircuitOpenMs() != null && config.getCircuitOpenMs() <= 0)
+        if (config.getTimeoutMs() != null && config.getTimeoutMs() <= 0) {
+            errors.add("timeoutMs 必须 > 0，当前值：" + config.getTimeoutMs());
+        }
+        if (config.getCircuitOpenMs() != null && config.getCircuitOpenMs() <= 0) {
             errors.add("circuitOpenMs 必须 > 0，当前值：" + config.getCircuitOpenMs());
-        if (config.getSelectFailureThreshold() != null && config.getSelectFailureThreshold() < 1)
-            errors.add("selectFailureThreshold 必须 >= 1，当前值：" + config.getSelectFailureThreshold());
-        if (config.getDmlFailureThreshold() != null && config.getDmlFailureThreshold() < 1)
-            errors.add("dmlFailureThreshold 必须 >= 1，当前值：" + config.getDmlFailureThreshold());
-        if (config.getFailureThreshold() != null && config.getFailureThreshold() < 1)
+        }
+        if (config.getFailureThreshold() != null && config.getFailureThreshold() < 1) {
             errors.add("failureThreshold 必须 >= 1，当前值：" + config.getFailureThreshold());
+        }
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException(
                     "[SqlCircuitBreaker] ThreadLocal 配置不合法：\n  - " + String.join("\n  - ", errors));
@@ -65,61 +58,11 @@ public class SqlCircuitBreakerContext {
     }
 
     /**
-     * 快捷方法：一次性设置四种 SQL 类型的超时
+     * 快捷方法：覆盖当前线程所有 SQL 类型的超时阈值
      */
-    public static void setTimeout(long selectMs, long insertMs, long updateMs, long deleteMs) {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
-        cfg.setSelectTimeoutMs(selectMs).setInsertTimeoutMs(insertMs).setUpdateTimeoutMs(updateMs).setDeleteTimeoutMs(deleteMs);
-        set(cfg);
-    }
-    /**
-     * 快捷方法：覆盖 SELECT 超时阈值
-     */
-    public static void setSelectTimeout(long selectMs) {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
-        cfg.setSelectTimeoutMs(selectMs);
-        set(cfg);
-    }
-
-    /**
-     * 快捷方法：覆盖 INSERT 超时阈值
-     */
-    public static void setInsertTimeout(long insertMs) {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
-        cfg.setInsertTimeoutMs(insertMs);
-        set(cfg);
-    }
-
-    /**
-     * 快捷方法：覆盖 UPDATE 超时阈值
-     */
-    public static void setUpdateTimeout(long updateMs) {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
-        cfg.setUpdateTimeoutMs(updateMs);
-        set(cfg);
-    }
-
-    /**
-     * 快捷方法：覆盖 DELETE 超时阈值
-     */
-    public static void setDeleteTimeout(long deleteMs) {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
-        cfg.setDeleteTimeoutMs(deleteMs);
+    public static void setTimeout(long timeoutMs) {
+        SqlCircuitBreakerConfig cfg = getOrNew();
+        cfg.setTimeoutMs(timeoutMs);
         set(cfg);
     }
 
@@ -127,48 +70,16 @@ public class SqlCircuitBreakerContext {
      * 快捷方法：覆盖熔断持续时长
      */
     public static void setCircuitOpenMs(long circuitOpenMs) {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
+        SqlCircuitBreakerConfig cfg = getOrNew();
         cfg.setCircuitOpenMs(circuitOpenMs);
         set(cfg);
     }
 
     /**
-     * 快捷方法：覆盖 SELECT 熔断触发阈值
-     */
-    public static void setSelectFailureThreshold(int threshold) {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
-        cfg.setSelectFailureThreshold(threshold);
-        set(cfg);
-    }
-
-    /**
-     * 快捷方法：覆盖 DML（INSERT/UPDATE/DELETE）熔断触发阈值
-     */
-    public static void setDmlFailureThreshold(int threshold) {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
-        cfg.setDmlFailureThreshold(threshold);
-        set(cfg);
-    }
-
-    /**
-     * 快捷方法：设置通用熔断触发阈值（SELECT 和 DML 的兜底）。
-     * 若已通过 setSelectFailureThreshold / setDmlFailureThreshold 设置了特定类型阈值，
-     * 特定值优先级更高，此方法的设置对已设特定类型不生效。
+     * 快捷方法：覆盖当前线程所有 SQL 类型的连续超时触发熔断次数
      */
     public static void setFailureThreshold(int failureThreshold) {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
+        SqlCircuitBreakerConfig cfg = getOrNew();
         cfg.setFailureThreshold(failureThreshold);
         set(cfg);
     }
@@ -177,12 +88,14 @@ public class SqlCircuitBreakerContext {
      * 快捷方法：当前线程完全跳过熔断检测
      */
     public static void disableCircuitBreaker() {
-        SqlCircuitBreakerConfig cfg = CTX.get();
-        if (cfg == null) {
-            cfg = new SqlCircuitBreakerConfig();
-        }
+        SqlCircuitBreakerConfig cfg = getOrNew();
         cfg.setDisableCircuitBreaker(true);
         set(cfg);
+    }
+
+    private static SqlCircuitBreakerConfig getOrNew() {
+        SqlCircuitBreakerConfig cfg = CTX.get();
+        return cfg != null ? cfg : new SqlCircuitBreakerConfig();
     }
 
     private SqlCircuitBreakerContext() {

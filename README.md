@@ -10,7 +10,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>1.0.5</version>
+    <version>1.0.6</version>
 </dependency>
 ```
 
@@ -19,14 +19,33 @@
 ```yaml
 sql-circuit-breaker:
   enabled: true
-  select-timeout-ms: 10000       # SELECT 超时阈值（毫秒）
-  insert-timeout-ms: 5000        # INSERT 超时阈值（毫秒）
-  update-timeout-ms: 5000        # UPDATE 超时阈值（毫秒）
-  delete-timeout-ms: 5000        # DELETE 超时阈值（毫秒）
-  circuit-open-ms: 60000         # 熔断持续时长（毫秒），到期自动重置为 CLOSED
-  select-failure-threshold: 3    # SELECT 连续超时几次触发熔断
-  dml-failure-threshold: 1       # DML 连续超时几次触发熔断
+  select:
+    timeout-ms: 10000                    # SELECT 超时阈值（毫秒）
+    failure-threshold: 3                 # 连续超时几次触发熔断
+    circuit-open-ms: 60000               # 熔断持续时长（毫秒）
+    cache-max-size: 10000                # 熔断状态缓存最大条目数
+    cache-expire-after-access-minutes: 30  # 缓存条目无访问后驱逐时间（分钟）
+  insert:
+    timeout-ms: 5000
+    failure-threshold: 1
+    circuit-open-ms: 30000
+    cache-max-size: 5000
+    cache-expire-after-access-minutes: 30
+  update:
+    timeout-ms: 5000
+    failure-threshold: 1
+    circuit-open-ms: 30000
+    cache-max-size: 5000
+    cache-expire-after-access-minutes: 30
+  delete:
+    timeout-ms: 5000
+    failure-threshold: 1
+    circuit-open-ms: 30000
+    cache-max-size: 5000
+    cache-expire-after-access-minutes: 30
 ```
+
+四种 SQL 类型（SELECT / INSERT / UPDATE / DELETE）均为必填，缺少任意一块启动时会报错提示。
 
 接入完成，重启即生效，无需修改任何业务代码。
 
@@ -60,8 +79,8 @@ sql-circuit-breaker:
 ┌─────────────────────────────────────────────────────────────────┐
 │                        业务系统                                  │
 │ Mapper 接口 / 方法                                              │
-│ @SqlCircuitBreaker(selectTimeout=5000)                          │
-│ SqlCircuitBreakerContext.set(...)  ← ThreadLocal 编程式覆盖     │
+│ @SqlCircuitBreaker(timeoutMs=5000)                              │
+│ SqlCircuitBreakerContext.setTimeout(...)  ← ThreadLocal 编程式  │
 └───────────────────────────┬─────────────────────────────────────┘
                             │ MyBatis / MyBatis-Plus 执行 SQL
                             ▼
@@ -79,7 +98,8 @@ sql-circuit-breaker:
               ┌─────────────┴──────────────┐
               ▼                            ▼
   CircuitBreakerRegistry          MessageCenterClient（可自定义实现）
-  （熔断状态存储：内存）            默认 NoOpMessageCenterClient
+  （4 个独立 Guava Cache，           默认 NoOpMessageCenterClient
+   按 SQL 类型分别管理）
   SQL指纹 → CircuitBreakerState
   状态：CLOSED / OPEN
 
@@ -138,44 +158,64 @@ select * from order where user_id = ? and status = ?
 ThreadLocal 编程式 > 方法级注解 > 接口级注解 > 全局配置文件
 ```
 
+注解和 ThreadLocal 是**粗粒度覆盖**：对该 Mapper / 方法下所有 SQL 类型统一生效，无法针对 SELECT / DML 分别设置。
+全局配置文件是**细粒度配置**：每种 SQL 类型独立精确控制，是 per-type 差异化配置的唯一入口。
+
 ## 4. 使用说明
 
 ### 4.1 全局配置（application.yml）
 
 ```yaml
 sql-circuit-breaker:
-    enabled: true
-    # SELECT 超时阈值（毫秒）参考建议: 10s
-    select-timeout-ms: 10000
-    # INSERT UPDATE DELETE 超时阈值（毫秒）参考建议: 5s
-    insert-timeout-ms: 5000
-    update-timeout-ms: 5000
-    delete-timeout-ms: 5000
-    # 熔断持续时长（毫秒），到期自动重置为 CLOSED。参考建议: 60000
-    circuit-open-ms: 60000
-    # SELECT 连续超时次数阈值，参考建议: 3
-    select-failure-threshold: 3
-    # DML 连续超时次数阈值，参考建议: 1
-    dml-failure-threshold: 1
+  enabled: true
+  # 拦截器注册顺序，默认最低优先级（最外层最先执行），一般无需修改
+  interceptor-order: 2147483647
+  select:
+    timeout-ms: 10000                      # SELECT 超时阈值（毫秒），建议 10s
+    failure-threshold: 3                   # 连续超时几次触发熔断，SELECT 建议 3
+    circuit-open-ms: 60000                 # 熔断持续时长（毫秒），建议 60s
+    cache-max-size: 10000                  # 熔断状态缓存最大条目数（LRU 驱逐）
+    cache-expire-after-access-minutes: 30  # 缓存无访问驱逐时间（分钟）
+  insert:
+    timeout-ms: 5000                       # DML 建议 5s
+    failure-threshold: 1                   # DML 持锁影响大，建议 1 次即熔断
+    circuit-open-ms: 30000
+    cache-max-size: 5000
+    cache-expire-after-access-minutes: 30
+  update:
+    timeout-ms: 5000
+    failure-threshold: 1
+    circuit-open-ms: 30000
+    cache-max-size: 5000
+    cache-expire-after-access-minutes: 30
+  delete:
+    timeout-ms: 5000
+    failure-threshold: 1
+    circuit-open-ms: 30000
+    cache-max-size: 5000
+    cache-expire-after-access-minutes: 30
 ```
 
 ### 4.2 注解配置
 
+注解字段对标注的 Mapper / 方法下所有 SQL 类型统一生效（粗粒度覆盖）。
+若需要按 SELECT / DML 独立配置，请使用 application.yml 全局配置。
+
 ```java
-// 接口级：该 Mapper 所有 SELECT 超时改为 5s
-@SqlCircuitBreaker(selectTimeout = 5000)
+// 接口级：该 Mapper 所有 SQL 超时改为 5s
+@SqlCircuitBreaker(timeoutMs = 5000)
 public interface OrderMapper extends BaseMapper<Order> {
 
-    // 方法级：SELECT 超时 2s，熔断持续 30s
-    @SqlCircuitBreaker(selectTimeout = 2000, circuitOpenMs = 30000)
+    // 方法级：超时 2s，熔断持续 30s（覆盖接口级配置）
+    @SqlCircuitBreaker(timeoutMs = 2000, circuitOpenMs = 30000)
     List<Order> complexQuery(QueryParam param);
 
     // 禁用熔断（适合人工触发的管理查询）
     @SqlCircuitBreaker(disableCircuitBreaker = true)
     List<Order> adminQuery(AdminParam param);
 
-    // 覆盖为 DML 级阈值（适合 SELECT ... FOR UPDATE）
-    @SqlCircuitBreaker(selectTimeout = 3000, failureThreshold = 1)
+    // SELECT ... FOR UPDATE：收紧阈值，1 次超时即熔断
+    @SqlCircuitBreaker(timeoutMs = 3000, failureThreshold = 1)
     List<Order> selectForUpdate(Long userId);
 }
 ```
@@ -183,9 +223,9 @@ public interface OrderMapper extends BaseMapper<Order> {
 ### 4.3 ThreadLocal 编程式
 
 ```java
-// 场景：当前请求临时放宽超时限制
+// 场景：当前请求临时放宽超时限制（对所有 SQL 类型统一生效）
 try {
-    SqlCircuitBreakerContext.setTimeout(60_000, 10_000, 10_000, 10_000);
+    SqlCircuitBreakerContext.setTimeout(60_000);
     List<Order> result = orderMapper.complexQuery(param);
     return result;
 } finally {
@@ -200,6 +240,16 @@ try {
     SqlCircuitBreakerContext.clear();
 }
 ```
+
+可用的快捷方法：
+
+| 方法 | 说明 |
+|---|---|
+| `setTimeout(long ms)` | 覆盖当前线程所有 SQL 类型的超时阈值 |
+| `setCircuitOpenMs(long ms)` | 覆盖熔断持续时长 |
+| `setFailureThreshold(int n)` | 覆盖连续超时触发熔断次数 |
+| `disableCircuitBreaker()` | 完全跳过熔断检测 |
+| `clear()` | 清理 ThreadLocal（必须在 finally 中调用） |
 
 ### 4.4 消息通知接入
 
@@ -248,7 +298,6 @@ public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
 | 熔断打开 | ERROR | key, 熔断时长, 开始时间, 预计恢复时间 |
 | 快速失败（节流：同 key 每 5s 一条） | ERROR | key, mapper, sql, 熔断时间, 熔断时长 |
 | 熔断到期自动重置为 CLOSED | INFO | key |
-| 定时清理空闲状态 | DEBUG | 清理数量 |
 
 日志示例：
 
@@ -285,42 +334,46 @@ public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
 
    ```java
    // ✅ 有效
-   @SqlCircuitBreaker(selectTimeout = 5000)
+   @SqlCircuitBreaker(timeoutMs = 5000)
    public interface OrderMapper extends BaseMapper<Order> { ... }
 
    // ❌ 无效，不会被识别
-   @SqlCircuitBreaker(selectTimeout = 5000)
+   @SqlCircuitBreaker(timeoutMs = 5000)
    public class OrderService { ... }
    ```
 
-4. **SQL 指纹碰撞**：极少数情况下不同 SQL 结构会产生相同指纹，可根据实际需要在指纹前拼接 `mapperId` 降低碰撞概率。
+4. **注解是粗粒度覆盖**：`@SqlCircuitBreaker` 的 `timeoutMs` / `failureThreshold` / `circuitOpenMs` 对该 Mapper / 方法下所有 SQL 类型统一生效。若需要 SELECT 和 DML 使用不同阈值，请在 application.yml 中按类型独立配置，注解仅作为整体覆盖使用。
 
-5. **熔断粒度**：当前粒度是 `数据源ID:SQL类型:SQL指纹`。若需要更细粒度（如按 mapperId + SQL），可在 circuitKey 中加入 `ms.getId()`。
+5. **SQL 指纹碰撞**：极少数情况下不同 SQL 结构会产生相同指纹，可根据实际需要在指纹前拼接 `mapperId` 降低碰撞概率。
 
-6. **不对异常熔断**：只对超时熔断，SQL 执行抛出的其他异常（如连接异常、语法错误）不纳入熔断计数，避免误判。
+6. **熔断粒度**：当前粒度是 `数据源ID:SQL类型:SQL指纹`。若需要更细粒度（如按 mapperId + SQL），可在 circuitKey 中加入 `ms.getId()`。
 
-7. **消息通知只发一次**：消息通知仅在熔断首次打开时触发，快速失败路径不发消息，避免高并发下消息风暴。
+7. **不对异常熔断**：只对超时熔断，SQL 执行抛出的其他异常（如连接异常、语法错误）不纳入熔断计数，避免误判。
 
-8. **`SELECT ... FOR UPDATE` 误判风险**：MyBatis 根据 XML 标签确定 SQL 类型，`SELECT ... FOR UPDATE` 会被识别为 SELECT，走宽松阈值。建议对此类方法单独加注解收紧阈值：
+8. **消息通知只发一次**：消息通知仅在熔断首次打开时触发，快速失败路径不发消息，避免高并发下消息风暴。
+
+9. **`SELECT ... FOR UPDATE` 误判风险**：MyBatis 根据 XML 标签确定 SQL 类型，`SELECT ... FOR UPDATE` 会被识别为 SELECT，走宽松阈值。建议对此类方法单独加注解收紧阈值：
 
    ```java
-   @SqlCircuitBreaker(selectTimeout = 3000, failureThreshold = 1)
+   @SqlCircuitBreaker(timeoutMs = 3000, failureThreshold = 1)
    List<Order> selectForUpdate(Long userId);
    ```
 
-9. **三层配置校验**：
+10. **配置校验规则**：
 
-   | 配置项 | 合法值 |
-   |---|---|
-   | `*-timeout-ms` | `> 0` |
-   | `circuit-open-ms` | `> 0` |
-   | `*-failure-threshold` | `>= 1` |
+    | 配置项 | 合法值 |
+    |---|---|
+    | `timeout-ms` | `> 0` |
+    | `circuit-open-ms` | `> 0` |
+    | `failure-threshold` | `>= 1` |
+    | `cache-max-size` | `>= 1` |
+    | `cache-expire-after-access-minutes` | `>= 1` |
 
-   全局配置在启动时校验，注解在首次 SQL 执行时校验，ThreadLocal 在调用 `set()` 时立即校验。
+    全局配置在启动时校验（缺少任意 SQL 类型块或字段非法均会快速失败）；注解在首次 SQL 执行时校验；ThreadLocal 在调用 `set()` 时立即校验。
 
-10. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
+11. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
 
-11. **多数据源场景的熔断隔离**：熔断 Key 包含数据源标识，保证不同数据源的熔断状态互不干扰。根据项目使用的多数据源框架选择适配方式：
+12. **多数据源场景的熔断隔离**：熔断 Key 包含数据源标识，保证不同数据源的熔断状态互不干扰。根据项目使用的多数据源框架选择适配方式：
 
     **方式一（推荐）：实现 `DataSourceKeyResolver` 接口**
 
@@ -355,11 +408,11 @@ public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
 | 模块 | 说明 |
 |---|---|
 | `SqlCircuitBreakerInterceptor` | 核心拦截器，MyBatis / MyBatis-Plus 自动收集注册 |
-| `CircuitBreakerRegistry` | 熔断状态注册中心，持有所有 SQL 指纹的状态 |
+| `CircuitBreakerRegistry` | 熔断状态注册中心，按 SQL 类型维护 4 个独立 Guava Cache |
 | `CircuitBreakerState` | 单个 SQL 指纹的两状态（CLOSED/OPEN）状态机 |
-| `SqlCircuitBreakerProperties` | 全局配置映射（application.yml） |
-| `@SqlCircuitBreaker` | 接口/方法级注解 |
-| `SqlCircuitBreakerContext` | ThreadLocal 编程式工具 |
+| `SqlCircuitBreakerProperties` | 全局配置映射（application.yml），按 SQL 类型独立配置 |
+| `@SqlCircuitBreaker` | 接口/方法级注解（粗粒度统一覆盖） |
+| `SqlCircuitBreakerContext` | ThreadLocal 编程式工具（粗粒度统一覆盖） |
 | `SqlCircuitBreakerConfig` | ThreadLocal 携带的配置对象 |
 | `ConfigResolver` | 多优先级配置合并（含注解解析缓存） |
 | `SqlFingerprintUtils` | SQL 指纹提取 |

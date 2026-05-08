@@ -125,7 +125,7 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
             }
 
             // 步骤8：从注册表获取（或初始化）该 SQL 对应的熔断状态机
-            CircuitBreakerState state = registry.getOrCreate(circuitKey);
+            CircuitBreakerState state = registry.getOrCreate(circuitKey, sqlType);
 
             // 步骤9：熔断器处于 OPEN 状态，快速失败，不再执行 SQL
             if (state.isOpen()) {

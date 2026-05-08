@@ -49,6 +49,7 @@
         <mybatis-plus.version>3.5.1</mybatis-plus.version>
         <mybatis.version>3.5.9</mybatis.version>
         <lombok.version>1.18.22</lombok.version>
+        <guava.version>27.0.1-jre</guava.version>
     </properties>
 
     <dependencyManagement>
@@ -79,6 +80,11 @@
                 <groupId>io.github.showingdata.starter.framework</groupId>
                 <artifactId>sql-circuit-breaker-core</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>${guava.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

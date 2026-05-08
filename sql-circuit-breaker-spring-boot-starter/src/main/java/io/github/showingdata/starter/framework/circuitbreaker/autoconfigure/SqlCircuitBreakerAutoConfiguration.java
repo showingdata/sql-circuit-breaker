@@ -19,8 +19,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.scheduling.annotation.EnableScheduling;
-
 /**
  * @author chenjiang
  * <p>
@@ -44,7 +42,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * </p>
  */
 @Configuration
-@EnableScheduling
 @EnableConfigurationProperties(SqlCircuitBreakerProperties.class)
 @ConditionalOnClass(name = "org.apache.ibatis.plugin.Interceptor")
 @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "enabled", havingValue = "true", matchIfMissing = false)
@@ -60,8 +57,9 @@ public class SqlCircuitBreakerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public CircuitBreakerRegistry circuitBreakerRegistry() {
-        return new CircuitBreakerRegistry();
+    public CircuitBreakerRegistry circuitBreakerRegistry(SqlCircuitBreakerProperties props) {
+        props.validate();
+        return new CircuitBreakerRegistry(props);
     }
 
     @Bean
@@ -101,7 +99,6 @@ public class SqlCircuitBreakerAutoConfiguration {
                                                                      MessageCenterClient messageCenterClient,
                                                                      ConfigResolver configResolver,
                                                                      DataSourceKeyResolver dataSourceKeyResolver) {
-        props.validate();
         return new SqlCircuitBreakerInterceptor(props, registry, messageCenterClient, configResolver, applicationName, dataSourceKeyResolver);
     }
 }

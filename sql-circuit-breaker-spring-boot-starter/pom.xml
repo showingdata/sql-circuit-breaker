@@ -51,13 +51,16 @@
             <artifactId>lombok</artifactId>
             <scope>provided</scope>
         </dependency>
+
         <!--
-            TODO: 替换为实际的消息中心 starter 依赖，并删除 message/MessageCenterClient.java 占位接口
-            <dependency>
-                <groupId>com.yourcompany</groupId>
-                <artifactId>message-center-starter</artifactId>
-                <version>${message-center.version}</version>
-            </dependency>
+            Guava 作为 SDK 的编译和运行时依赖传递给业务方，确保开箱即用，
+            避免业务方 classpath 缺失 Guava 导致 NoClassDefFoundError。
+            版本由 parent 的 dependencyManagement 统一管控。
         -->
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+        </dependency>
+
     </dependencies>
 </project>

@@ -59,17 +59,12 @@ public class CircuitBreakerState {
      */
     private volatile int consecutiveFail;
     /**
-     * 最近一次活跃时间，供 CircuitBreakerRegistry.evictIdle() 判断是否回收
-     */
-    private volatile long lastActiveTime;
-    /**
      * 上次快速失败日志打印时间，用于日志节流防止高并发下日志风暴
      */
     private volatile long lastFastFailLogTime;
 
     public CircuitBreakerState(String sqlFingerprint) {
         this.sqlFingerprint = sqlFingerprint;
-        this.lastActiveTime = System.currentTimeMillis();
     }
 
     public String getSqlFingerprint() {
@@ -84,15 +79,16 @@ public class CircuitBreakerState {
         return circuitOpenMs;
     }
 
-    public long getLastActiveTime() {
-        return lastActiveTime;
-    }
-
     /**
      * 判断是否需要快速失败：
      * - CLOSED → false（放行）
      * - OPEN 且未到期 → true（快速失败）
      * - OPEN 且到期 → 重置为 CLOSED，放行
+     * <p>
+     * 线程安全：外层基于 volatile 读取做快速判断；到期重置时通过 synchronized double-check
+     * 保证原子性。synchronized 块内同时校验 state == OPEN 和时间差，防止以下竞态：
+     * 线程A外层判断到期 → 线程B通过 onTimeout() 刚设了新的 OPEN（新的 openTimestamp/circuitOpenMs）→
+     * 线程A进入 synchronized 误将新的 OPEN 重置为 CLOSED。
      */
     public boolean isOpen() {
         if (state == State.CLOSED) {
@@ -101,14 +97,15 @@ public class CircuitBreakerState {
         // OPEN 状态：检查熔断是否到期
         if (System.currentTimeMillis() - openTimestamp > circuitOpenMs) {
             synchronized (this) {
-                // double-check：防止多线程同时到期时重复重置
-                if (state == State.OPEN) {
+                // double-check：同时校验状态和时间差，防止并发 onTimeout 设置新 OPEN 后被误重置
+                if (state == State.OPEN && System.currentTimeMillis() - openTimestamp > circuitOpenMs) {
                     state = State.CLOSED;
                     consecutiveFail = 0;
                     log.info("[SqlCircuitBreaker] 熔断到期，自动重置为 CLOSED | key={}", sqlFingerprint);
                 }
             }
-            return false;
+            // 无论是否重置成功，重新读取 state：若仍为 OPEN（被 onTimeout 刷新了时间戳），返回 true
+            return state == State.OPEN;
         }
         return true;
     }
@@ -153,13 +150,5 @@ public class CircuitBreakerState {
         }
         return false;
     }
-
-    /**
-     * 刷新最近活跃时间，供 evictIdle 判断是否清理
-     */
-    public void touch() {
-        lastActiveTime = System.currentTimeMillis();
-    }
-
 
 }
