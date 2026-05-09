@@ -13,8 +13,9 @@ import io.github.showingdata.starter.framework.circuitbreaker.metrics.Micrometer
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.NoOpCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -51,6 +52,7 @@ import org.springframework.context.annotation.Configuration;
 @EnableConfigurationProperties(SqlCircuitBreakerProperties.class)
 @ConditionalOnClass(name = "org.apache.ibatis.plugin.Interceptor")
 @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "enabled", havingValue = "true", matchIfMissing = false)
+@AutoConfigureAfter(name = "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration")
 public class SqlCircuitBreakerAutoConfiguration {
 
     @Value("${spring.application.name:unknown}")
@@ -95,26 +97,30 @@ public class SqlCircuitBreakerAutoConfiguration {
     }
 
     /**
-     * Micrometer 指标实现：类路径存在 MeterRegistry 且 Spring 容器中有 MeterRegistry Bean 时注册。
+     * Micrometer 指标实现：类路径存在 MeterRegistry 时注册。
      * 独立静态内部配置类确保 MeterRegistry 类不在 classpath 时不触发类加载失败。
-     * 使用 name 字符串形式声明 @ConditionalOnClass，避免类加载阶段解析 MeterRegistry 引用。
+     * 使用 ObjectProvider 在 Bean 创建时懒解析 MeterRegistry，避免 @ConditionalOnBean 注册顺序竞争。
+     * MeterRegistry 不存在时降级为 NoOpCircuitBreakerMetrics，保证 SDK 无侵入运行。
      */
     @Configuration
     @ConditionalOnClass(name = "io.micrometer.core.instrument.MeterRegistry")
     static class MicrometerMetricsConfiguration {
 
         @Bean
-        @ConditionalOnBean(type = "io.micrometer.core.instrument.MeterRegistry")
         @ConditionalOnMissingBean(SqlCircuitBreakerMetrics.class)
         public SqlCircuitBreakerMetrics sqlCircuitBreakerMetrics(
-                io.micrometer.core.instrument.MeterRegistry meterRegistry,
+                ObjectProvider<io.micrometer.core.instrument.MeterRegistry> meterRegistryProvider,
                 CircuitBreakerRegistry circuitBreakerRegistry) {
-            return new MicrometerCircuitBreakerMetrics(meterRegistry, circuitBreakerRegistry);
+            io.micrometer.core.instrument.MeterRegistry mr = meterRegistryProvider.getIfAvailable();
+            if (mr != null) {
+                return new MicrometerCircuitBreakerMetrics(mr, circuitBreakerRegistry);
+            }
+            return new NoOpCircuitBreakerMetrics();
         }
     }
 
     /**
-     * 降级空操作实现：Micrometer 不在 classpath 或无 MeterRegistry Bean 时生效，保证 SDK 无侵入运行。
+     * 降级空操作实现：Micrometer 不在 classpath 时生效，保证 SDK 无侵入运行。
      */
     @Bean
     @ConditionalOnMissingBean(SqlCircuitBreakerMetrics.class)
