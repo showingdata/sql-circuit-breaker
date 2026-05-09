@@ -3,7 +3,6 @@ package io.github.showingdata.starter.framework.circuitbreaker.config;
 import lombok.Data;
 import org.apache.ibatis.mapping.SqlCommandType;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.core.Ordered;
 
 import java.util.ArrayList;
 import java.util.List;

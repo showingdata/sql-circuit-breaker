@@ -10,6 +10,7 @@ import io.github.showingdata.starter.framework.circuitbreaker.config.ResolvedCon
 import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitBreakerProperties;
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.message.MessageCenterClient;
+import io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry;
 import org.apache.ibatis.cache.CacheKey;
 import org.apache.ibatis.executor.Executor;
@@ -28,8 +29,10 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -71,24 +74,51 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
     );
 
     private final SqlCircuitBreakerProperties props;
-
     private final CircuitBreakerRegistry registry;
-
     private final MessageCenterClient messageCenterClient;
-
     private final ConfigResolver configResolver;
-
     private final String applicationName;
-
     private final DataSourceKeyResolver dataSourceKeyResolver;
+    private final SqlCircuitBreakerMetrics metrics;
 
-    public SqlCircuitBreakerInterceptor(SqlCircuitBreakerProperties props, CircuitBreakerRegistry registry, MessageCenterClient messageCenterClient, ConfigResolver configResolver, String applicationName, DataSourceKeyResolver dataSourceKeyResolver) {
+    /**
+     * SQL 指纹缓存：MappedStatement.id → FingerprintEntry。
+     * 同一 Mapper 方法的 SQL 模板（BoundSql.getSql()）通常固定不变，
+     * 缓存后跳过 6 轮正则替换 + MD5 计算，显著降低高 QPS 下的 CPU 开销。
+     * 动态 SQL（<if>/<foreach>）场景下 rawSql 可能变化，通过 equals 校验保证正确性。
+     */
+    private final ConcurrentHashMap<String, FingerprintEntry> fingerprintCache = new ConcurrentHashMap<>();
+
+    /**
+     * SQL 指纹缓存条目，存储原始 SQL、提取后的指纹和 MD5 哈希。
+     * 所有字段均为 final，不可变，保证多线程读取安全。
+     */
+    private static final class FingerprintEntry {
+        final String rawSql;
+        final String fingerprint;
+        final String hash;
+
+        FingerprintEntry(String rawSql, String fingerprint, String hash) {
+            this.rawSql = rawSql;
+            this.fingerprint = fingerprint;
+            this.hash = hash;
+        }
+    }
+
+    public SqlCircuitBreakerInterceptor(SqlCircuitBreakerProperties props,
+                                        CircuitBreakerRegistry registry,
+                                        MessageCenterClient messageCenterClient,
+                                        ConfigResolver configResolver,
+                                        String applicationName,
+                                        DataSourceKeyResolver dataSourceKeyResolver,
+                                        SqlCircuitBreakerMetrics metrics) {
         this.props = props;
         this.registry = registry;
         this.messageCenterClient = messageCenterClient;
         this.configResolver = configResolver;
         this.applicationName = applicationName;
         this.dataSourceKeyResolver = dataSourceKeyResolver;
+        this.metrics = metrics;
     }
 
     @Override
@@ -106,15 +136,30 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
                 return invocation.proceed();
             }
 
+            metrics.recordIntercept(sqlType.name());
+
             // 步骤3：获取 BoundSql —— 6 参数重载时 args[5] 已是 BoundSql，其余情况通过参数对象动态获取
             BoundSql boundSql = invocation.getArgs().length == 6 ? (BoundSql) invocation.getArgs()[5] : ms.getBoundSql(invocation.getArgs()[1]);
 
             // 步骤4：提取 SQL 指纹（将参数值替换为 ?，归一化同类 SQL），用于日志展示
-            String fingerprint = SqlFingerprintUtils.extract(boundSql.getSql());
+            // 优先查缓存：同一 Mapper 方法的 SQL 模板通常固定，缓存命中可跳过 6 轮正则 + MD5 计算；
+            // 动态 SQL（<if>/<foreach>）场景下 rawSql 可能变化，equals 不匹配时重新计算并更新缓存。
+            String rawSql = boundSql.getSql();
+            FingerprintEntry entry = fingerprintCache.get(ms.getId());
+            String fingerprint;
+            String fingerprintHash;
+            if (entry != null && Objects.equals(rawSql, entry.rawSql)) {
+                fingerprint = entry.fingerprint;
+                fingerprintHash = entry.hash;
+            } else {
+                fingerprint = SqlFingerprintUtils.extract(rawSql);
+                fingerprintHash = SqlFingerprintUtils.hash(fingerprint);
+                fingerprintCache.put(ms.getId(), new FingerprintEntry(rawSql, fingerprint, fingerprintHash));
+            }
 
             // 步骤5：生成熔断 key = 数据源ID + SQL类型 + 指纹的 MD5，数据源ID 隔离多数据源场景下的熔断状态
             String dsKey = dataSourceKeyResolver.resolve(ms);
-            String circuitKey = (dsKey != null ? dsKey : "default") + ":" + sqlType.name() + ":" + SqlFingerprintUtils.hash(fingerprint);
+            String circuitKey = (dsKey != null ? dsKey : "default") + ":" + sqlType.name() + ":" + fingerprintHash;
 
             // 步骤6：按优先级解析配置（ThreadLocal > 方法注解 > 接口注解 > 全局配置）
             ResolvedConfig config = configResolver.resolve(ms, sqlType);
@@ -134,6 +179,7 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
                 if (state.shouldLogFastFail(5000)) {
                     log.error("[SqlCircuitBreaker] 快速失败 | key={} | mapper={} | sql={} | 熔断时间={} | 熔断时长={}ms", circuitKey, ms.getId(), fingerprint, openAt, state.getCircuitOpenMs());
                 }
+                metrics.recordFastFail(sqlType.name(), ms.getId());
                 throw new SqlCircuitBreakerException(buildFailMessage(ms, circuitKey, fingerprint, sqlType, state, openAt), circuitKey);
             }
 
@@ -169,11 +215,13 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
                                String circuitKey, String fingerprint,
                                long cost, ResolvedConfig config, CircuitBreakerState state) {
         log.error("[SqlCircuitBreaker] 执行超时 | key={} | mapper={} | sql={} | 耗时={}ms | 超时阈值={}ms", circuitKey, ms.getId(), fingerprint, cost, config.getTimeout());
+        metrics.recordTimeout(sqlType.name(), ms.getId());
         boolean triggered = state.onTimeout(config.getFailureThreshold(), config.getCircuitOpenMs());
         if (triggered) {
             String openAt = formatTs(state.getOpenTimestamp());
             String recoverAt = formatTs(state.getOpenTimestamp() + state.getCircuitOpenMs());
             log.error("[SqlCircuitBreaker] 熔断开启 | key={} | 熔断时长={}ms | 开始={} | 预计恢复={}", circuitKey, state.getCircuitOpenMs(), openAt, recoverAt);
+            metrics.recordOpen(sqlType.name(), ms.getId());
             sendMessage(buildEvent(ms, fingerprint, sqlType, state, config.getTimeout(), cost).setEventType("CIRCUIT_OPEN"));
         }
     }
@@ -227,7 +275,7 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
 
     @Override
     public int getOrder() {
-        return props.getInterceptorOrder();
+        return Ordered.LOWEST_PRECEDENCE;
     }
 
     @Override

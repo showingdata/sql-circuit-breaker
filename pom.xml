@@ -6,7 +6,7 @@
 
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-parent</artifactId>
-    <version>1.0.6</version>
+    <version>2.0.0</version>
     <packaging>pom</packaging>
     <name>sql-circuit-breaker-parent</name>
     <description>基于 MyBatis / MyBatis-Plus 拦截器的 SQL 超时熔断 Spring Boot Starter</description>
@@ -50,6 +50,7 @@
         <mybatis.version>3.5.9</mybatis.version>
         <lombok.version>1.18.22</lombok.version>
         <guava.version>27.0.1-jre</guava.version>
+        <micrometer-core.version>1.8.2</micrometer-core.version>
     </properties>
 
     <dependencyManagement>
@@ -85,6 +86,11 @@
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
                 <version>${guava.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.micrometer</groupId>
+                <artifactId>micrometer-core</artifactId>
+                <optional>${micrometer-core.version}</optional>
             </dependency>
         </dependencies>
     </dependencyManagement>

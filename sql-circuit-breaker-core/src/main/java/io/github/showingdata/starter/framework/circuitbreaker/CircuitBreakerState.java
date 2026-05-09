@@ -140,6 +140,14 @@ public class CircuitBreakerState {
     }
 
     /**
+     * 无副作用地读取当前状态是否为 OPEN，不触发到期重置逻辑。
+     * 仅供 Gauge 指标统计使用，不作为熔断判断依据。
+     */
+    public boolean isOpenRaw() {
+        return state == State.OPEN;
+    }
+
+    /**
      * 快速失败日志节流：同一 circuitKey 在 throttleMs 内只应输出一次日志，防止高并发下日志风暴。
      */
     public boolean shouldLogFastFail(long throttleMs) {

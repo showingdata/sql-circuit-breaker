@@ -10,7 +10,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>1.0.6</version>
+    <version>2.0.0</version>
 </dependency>
 ```
 
@@ -19,7 +19,6 @@
 ```yaml
 sql-circuit-breaker:
   enabled: true
-  interceptor-order: 2147483647          # 拦截器顺序，避免与其它拦截器冲突
   select:
     timeout-ms: 10000                    # SELECT 超时阈值（毫秒）
     failure-threshold: 3                 # 连续超时几次触发熔断
@@ -72,6 +71,7 @@ sql-circuit-breaker:
 | 快速失败 | 熔断期间抛出指定业务异常，记录结构化错误日志 |
 | 消息通知 | 实现 `MessageCenterClient` 接口即可接入自有通知渠道，默认空操作 |
 | 多数据源隔离 | 实现 `DataSourceKeyResolver` 接口即可适配任意数据源框架（如 dynamic-datasource），默认基于 MyBatis Environment ID |
+| 可观测性 | 引入 Micrometer（spring-boot-actuator）后自动暴露 5 项指标，无需额外配置 |
 
 
 ## 2. 整体架构
@@ -94,6 +94,7 @@ sql-circuit-breaker:
 │     ├── OPEN  → 快速失败，抛 SqlCircuitBreakerException         │
 │     └── CLOSED → 正常执行，计时                                  │
 │  5. 执行超时 → 更新熔断状态 → 发布熔断事件                      │
+│  6. 全程上报 Micrometer 指标                                    │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
               ┌─────────────┴──────────────┐
@@ -169,8 +170,6 @@ ThreadLocal 编程式 > 方法级注解 > 接口级注解 > 全局配置文件
 ```yaml
 sql-circuit-breaker:
   enabled: true
-  # 拦截器注册顺序，默认最低优先级（最外层最先执行），一般无需修改
-  interceptor-order: 2147483647
   select:
     timeout-ms: 10000                      # SELECT 超时阈值（毫秒），建议 10s
     failure-threshold: 3                   # 连续超时几次触发熔断，SELECT 建议 3
@@ -287,6 +286,30 @@ public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
 ```
 
 其他框架同理，只需在 `resolve()` 中返回能唯一标识当前数据源的字符串即可。若项目只有单数据源，无需任何配置，默认返回 `"default"`，不受影响。
+
+### 4.6 Metrics 指标（Micrometer）
+
+项目引入 `spring-boot-actuator`（已传递 `micrometer-core`）后，SDK 自动激活以下 5 项指标，无需任何额外配置：
+
+| 指标名 | 类型 | 标签 | 说明 |
+|---|---|---|---|
+| `sql.circuit.breaker.intercept.total` | Counter | `sql_type` | 拦截器处理的 SQL 总次数（UNKNOWN/FLUSH 不计） |
+| `sql.circuit.breaker.timeout` | Counter | `sql_type`, `mapper_id` | SQL 执行超时次数 |
+| `sql.circuit.breaker.open` | Counter | `sql_type`, `mapper_id` | 熔断器开启次数（CLOSED → OPEN） |
+| `sql.circuit.breaker.fast.fail` | Counter | `sql_type`, `mapper_id` | 快速失败次数 |
+| `sql.circuit.breaker.open.count` | Gauge | 无 | 当前处于 OPEN 状态的熔断器数量 |
+
+不引入 Micrometer 时所有指标退化为空操作，SDK 正常运行不受影响。
+
+Prometheus 抓取示例（配合 Grafana 告警）：
+
+```promql
+# 近 5 分钟快速失败速率
+rate(sql_circuit_breaker_fast_fail_total[5m])
+
+# 当前有多少熔断器处于 OPEN 状态
+sql_circuit_breaker_open_count
+```
 
 
 ## 5. 日志格式
@@ -416,10 +439,13 @@ public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
 | `SqlCircuitBreakerContext` | ThreadLocal 编程式工具（粗粒度统一覆盖） |
 | `SqlCircuitBreakerConfig` | ThreadLocal 携带的配置对象 |
 | `ConfigResolver` | 多优先级配置合并（含注解解析缓存） |
-| `SqlFingerprintUtils` | SQL 指纹提取 |
+| `SqlFingerprintUtils` | SQL 指纹提取（含 Mapper 级指纹缓存优化） |
 | `CircuitBreakerEvent` | 熔断事件 DTO |
 | `MessageCenterClient` | 消息通知扩展接口，默认空实现 |
 | `DataSourceKeyResolver` | 数据源标识解析扩展接口，用于多数据源熔断隔离 |
 | `DefaultDataSourceKeyResolver` | 默认实现，基于 MyBatis Environment ID |
-| `SqlCircuitBreakerException` | 熔断快速失败异常 |
+| `SqlCircuitBreakerException` | 熔断快速失败异常（已重写 fillInStackTrace，高并发下无堆栈填充开销） |
+| `SqlCircuitBreakerMetrics` | 指标上报接口，Micrometer 存在时自动切换为真实实现 |
+| `MicrometerCircuitBreakerMetrics` | 基于 Micrometer 的指标实现，自动注册 5 项 Counter/Gauge |
+| `NoOpCircuitBreakerMetrics` | 空操作实现，Micrometer 不在 classpath 时兜底 |
 | `SqlCircuitBreakerAutoConfiguration` | Spring Boot 自动装配 |
