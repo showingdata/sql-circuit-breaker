@@ -19,6 +19,7 @@
 ```yaml
 sql-circuit-breaker:
   enabled: true
+  interceptor-order: 2147483647          # 拦截器顺序，避免与其它拦截器冲突
   select:
     timeout-ms: 10000                    # SELECT 超时阈值（毫秒）
     failure-threshold: 3                 # 连续超时几次触发熔断
