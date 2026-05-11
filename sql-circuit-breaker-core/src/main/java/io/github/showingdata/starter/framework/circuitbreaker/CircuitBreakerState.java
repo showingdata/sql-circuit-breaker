@@ -3,6 +3,8 @@ package io.github.showingdata.starter.framework.circuitbreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
  * @author chenjiang
  * @date 2026/5/1 16:20
@@ -27,7 +29,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>
  * 线程安全：状态字段均为 volatile；onTimeout / onSuccess 加 synchronized 保证原子性；
- * isOpen() 中到期重置通过 synchronized double-check 防止并发重复重置。
+ * isOpen() 中到期重置通过 synchronized double-check 防止并发重复重置；
+ * lastFastFailLogTime 使用 AtomicLong + CAS 保证日志节流的原子性。
  * </p>
  */
 public class CircuitBreakerState {
@@ -39,9 +42,9 @@ public class CircuitBreakerState {
     }
 
     /**
-     * SQL 指纹，用于日志中标识是哪条 SQL 的熔断状态
+     * 熔断 key（dsKey:sqlType:fingerprintHash），用于日志中标识是哪个熔断器
      */
-    private final String sqlFingerprint;
+    private final String circuitKey;
     /**
      * 当前熔断状态
      */
@@ -61,14 +64,14 @@ public class CircuitBreakerState {
     /**
      * 上次快速失败日志打印时间，用于日志节流防止高并发下日志风暴
      */
-    private volatile long lastFastFailLogTime;
+    private final AtomicLong lastFastFailLogTime = new AtomicLong(0);
 
-    public CircuitBreakerState(String sqlFingerprint) {
-        this.sqlFingerprint = sqlFingerprint;
+    public CircuitBreakerState(String circuitKey) {
+        this.circuitKey = circuitKey;
     }
 
-    public String getSqlFingerprint() {
-        return sqlFingerprint;
+    public String getCircuitKey() {
+        return circuitKey;
     }
 
     public long getOpenTimestamp() {
@@ -101,7 +104,7 @@ public class CircuitBreakerState {
                 if (state == State.OPEN && System.currentTimeMillis() - openTimestamp > circuitOpenMs) {
                     state = State.CLOSED;
                     consecutiveFail = 0;
-                    log.info("[SqlCircuitBreaker] 熔断到期，自动重置为 CLOSED | key={}", sqlFingerprint);
+                    log.info("[SqlCircuitBreaker] 熔断到期，自动重置为 CLOSED | key={}", circuitKey);
                 }
             }
             // 无论是否重置成功，重新读取 state：若仍为 OPEN（被 onTimeout 刷新了时间戳），返回 true
@@ -140,15 +143,21 @@ public class CircuitBreakerState {
     }
 
     /**
+     * 无副作用地读取当前状态是否为 OPEN，不触发到期重置逻辑。
+     * 仅供 Gauge 指标统计使用，不作为熔断判断依据。
+     */
+    public boolean isOpenRaw() {
+        return state == State.OPEN;
+    }
+
+    /**
      * 快速失败日志节流：同一 circuitKey 在 throttleMs 内只应输出一次日志，防止高并发下日志风暴。
+     * 使用 CAS 保证原子性，避免多线程同时通过节流检查导致日志重复打印。
      */
     public boolean shouldLogFastFail(long throttleMs) {
+        long last = lastFastFailLogTime.get();
         long now = System.currentTimeMillis();
-        if (now - lastFastFailLogTime >= throttleMs) {
-            lastFastFailLogTime = now;
-            return true;
-        }
-        return false;
+        return now - last >= throttleMs && lastFastFailLogTime.compareAndSet(last, now);
     }
 
 }

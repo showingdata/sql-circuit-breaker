@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.showingdata.starter.framework</groupId>
         <artifactId>sql-circuit-breaker-parent</artifactId>
-        <version>1.0.6</version>
+        <version>2.0.0</version>
     </parent>
 
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
@@ -31,10 +31,7 @@
             <artifactId>spring-boot-configuration-processor</artifactId>
             <optional>true</optional>
         </dependency>
-        <!--
-            仅需 MyBatis core（拦截器工作在 Executor 层，不依赖 MP）。
-            provided：由业务系统引入，兼容 mybatis-spring-boot-starter 和 mybatis-plus-boot-starter。
-        -->
+
         <dependency>
             <groupId>org.mybatis</groupId>
             <artifactId>mybatis</artifactId>
@@ -52,14 +49,17 @@
             <scope>provided</scope>
         </dependency>
 
-        <!--
-            Guava 作为 SDK 的编译和运行时依赖传递给业务方，确保开箱即用，
-            避免业务方 classpath 缺失 Guava 导致 NoClassDefFoundError。
-            版本由 parent 的 dependencyManagement 统一管控。
-        -->
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
+        </dependency>
+
+        <!-- Micrometer：可选依赖，业务方引入 spring-boot-actuator 时自动生效。
+         SDK 内部通过 @ConditionalOnClass + NoOp 降级，不强制要求业务方引入。-->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
         </dependency>
 
     </dependencies>
