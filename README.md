@@ -163,6 +163,28 @@ ThreadLocal 编程式 > 方法级注解 > 接口级注解 > 全局配置文件
 注解和 ThreadLocal 是**粗粒度覆盖**：对该 Mapper / 方法下所有 SQL 类型统一生效，无法针对 SELECT / DML 分别设置。
 全局配置文件是**细粒度配置**：每种 SQL 类型独立精确控制，是 per-type 差异化配置的唯一入口。
 
+### 3.4 内置缓存（Guava Cache）
+
+`CircuitBreakerRegistry` 为 4 种 SQL 类型分别维护一个独立的 Guava Cache，用于存储每条 SQL 指纹对应的熔断状态：
+
+```
+selectCache:  circuitKey → CircuitBreakerState
+insertCache:  circuitKey → CircuitBreakerState
+updateCache:  circuitKey → CircuitBreakerState
+deleteCache:  circuitKey → CircuitBreakerState
+```
+
+**双重驱逐策略**，两个参数在 application.yml 中按 SQL 类型独立配置：
+
+| 配置项 | 驱逐策略 | 作用 |
+|---|---|---|
+| `cache-max-size` | LRU 容量上限 | 防止无限增长占满内存，超出后驱逐最久未访问的条目 |
+| `cache-expire-after-access-minutes` | 访问过期 | 某条 SQL 长期未被访问时自动移出，防止长期不活跃的 SQL 驻留内存 |
+
+**两个参数需配合使用**：容量上限应对突发场景（短时间内大量不同 SQL 进入），访问过期应对长期场景（业务低谷期 SQL 变少后及时收缩内存占用）。
+
+**各类型独立配置的意义**：SELECT 场景通常 SQL 种类多（各种查询条件组合），`cache-max-size` 建议设大（如 10000）；DML 场景 SQL 种类相对少，可设小（如 5000）节省内存。
+
 ## 4. 使用说明
 
 ### 4.1 全局配置（application.yml）

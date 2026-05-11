@@ -3,6 +3,8 @@ package io.github.showingdata.starter.framework.circuitbreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
  * @author chenjiang
  * @date 2026/5/1 16:20
@@ -27,7 +29,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>
  * 线程安全：状态字段均为 volatile；onTimeout / onSuccess 加 synchronized 保证原子性；
- * isOpen() 中到期重置通过 synchronized double-check 防止并发重复重置。
+ * isOpen() 中到期重置通过 synchronized double-check 防止并发重复重置；
+ * lastFastFailLogTime 使用 AtomicLong + CAS 保证日志节流的原子性。
  * </p>
  */
 public class CircuitBreakerState {
@@ -61,7 +64,7 @@ public class CircuitBreakerState {
     /**
      * 上次快速失败日志打印时间，用于日志节流防止高并发下日志风暴
      */
-    private volatile long lastFastFailLogTime;
+    private final AtomicLong lastFastFailLogTime = new AtomicLong(0);
 
     public CircuitBreakerState(String sqlFingerprint) {
         this.sqlFingerprint = sqlFingerprint;
@@ -149,14 +152,12 @@ public class CircuitBreakerState {
 
     /**
      * 快速失败日志节流：同一 circuitKey 在 throttleMs 内只应输出一次日志，防止高并发下日志风暴。
+     * 使用 CAS 保证原子性，避免多线程同时通过节流检查导致日志重复打印。
      */
     public boolean shouldLogFastFail(long throttleMs) {
+        long last = lastFastFailLogTime.get();
         long now = System.currentTimeMillis();
-        if (now - lastFastFailLogTime >= throttleMs) {
-            lastFastFailLogTime = now;
-            return true;
-        }
-        return false;
+        return now - last >= throttleMs && lastFastFailLogTime.compareAndSet(last, now);
     }
 
 }
