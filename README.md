@@ -311,27 +311,99 @@ public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
 
 ### 4.6 Metrics 指标（Micrometer）
 
-项目引入 `spring-boot-actuator`（已传递 `micrometer-core`）后，SDK 自动激活以下 5 项指标，无需任何额外配置：
+#### 激活方式
+
+引入 `spring-boot-actuator` 即可，SDK 自动检测并激活真实指标实现，无需任何额外配置：
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+```
+
+未引入 `spring-boot-actuator` 时，所有指标降级为空操作，SDK 正常运行不受任何影响。
+
+#### 指标清单
+
+SDK 自动注册以下 5 项指标：
 
 | 指标名 | 类型 | 标签 | 说明 |
 |---|---|---|---|
-| `sql.circuit.breaker.intercept.total` | Counter | `sql_type` | 拦截器处理的 SQL 总次数（UNKNOWN/FLUSH 不计） |
-| `sql.circuit.breaker.timeout` | Counter | `sql_type`, `mapper_id` | SQL 执行超时次数 |
+| `sql.circuit.breaker.intercept.total` | Counter | `sql_type` | 拦截器处理的 SQL 总次数（UNKNOWN/FLUSH 不计入） |
+| `sql.circuit.breaker.timeout` | Counter | `sql_type`, `mapper_id` | SQL 执行超时次数（耗时超过阈值） |
 | `sql.circuit.breaker.open` | Counter | `sql_type`, `mapper_id` | 熔断器开启次数（CLOSED → OPEN） |
-| `sql.circuit.breaker.fast.fail` | Counter | `sql_type`, `mapper_id` | 快速失败次数 |
-| `sql.circuit.breaker.open.count` | Gauge | 无 | 当前处于 OPEN 状态的熔断器数量 |
+| `sql.circuit.breaker.fast.fail` | Counter | `sql_type`, `mapper_id` | 熔断期间快速失败次数 |
+| `sql.circuit.breaker.open.count` | Gauge | 无 | 当前处于 OPEN 状态的熔断器数量（实时） |
 
-不引入 Micrometer 时所有指标退化为空操作，SDK 正常运行不受影响。
+标签说明：
+- `sql_type`：SQL 类型，值为 `SELECT` / `INSERT` / `UPDATE` / `DELETE`
+- `mapper_id`：Mapper 全限定方法名，如 `com.example.mapper.OrderMapper.queryByUserId`
 
-Prometheus 抓取示例（配合 Grafana 告警）：
+> `sql.circuit.breaker.intercept.total` 在启动时即完成预注册（四种 SQL 类型各一个 Counter），在 `/actuator/metrics` 接口中首次 SQL 执行前也可见。
+
+#### 访问端点
+
+通过 `/actuator/metrics` 查看指标：
+
+```yaml
+# application.yml 开放端点（按需配置）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: metrics, prometheus
+```
+
+```
+# 查看某项指标当前值
+GET /actuator/metrics/sql.circuit.breaker.open.count
+
+# 按 sql_type 过滤
+GET /actuator/metrics/sql.circuit.breaker.timeout?tag=sql_type:SELECT
+```
+
+#### Prometheus + Grafana 告警示例
 
 ```promql
-# 近 5 分钟快速失败速率
+# 近 5 分钟内各 Mapper 快速失败速率（用于告警触发）
 rate(sql_circuit_breaker_fast_fail_total[5m])
 
-# 当前有多少熔断器处于 OPEN 状态
+# 近 5 分钟内超时速率（按 SQL 类型聚合）
+sum by (sql_type) (rate(sql_circuit_breaker_timeout_total[5m]))
+
+# 当前处于 OPEN 状态的熔断器数量（> 0 即告警）
 sql_circuit_breaker_open_count
+
+# 熔断开启频率（近 1 小时，按 Mapper 排列）
+topk(10, sum by (mapper_id) (increase(sql_circuit_breaker_open_total[1h])))
 ```
+
+建议对 `sql_circuit_breaker_open_count > 0` 配置即时告警，该 Gauge 归零说明所有熔断器已自动恢复，无需手动处理。
+
+#### 自定义指标实现
+
+若项目未使用 Micrometer（如使用其他监控体系），可实现 `SqlCircuitBreakerMetrics` 接口并注册为 Spring Bean 接入自有监控：
+
+```java
+@Component
+public class CustomCircuitBreakerMetrics implements SqlCircuitBreakerMetrics {
+
+    @Override
+    public void recordIntercept(String sqlType) { ... }
+
+    @Override
+    public void recordTimeout(String sqlType, String mapperId) { ... }
+
+    @Override
+    public void recordOpen(String sqlType, String mapperId) { ... }
+
+    @Override
+    public void recordFastFail(String sqlType, String mapperId) { ... }
+}
+```
+
+SDK 通过 `@ConditionalOnMissingBean` 检测，存在自定义实现时自动跳过 Micrometer 实现的注册。
 
 
 ## 5. 日志格式
