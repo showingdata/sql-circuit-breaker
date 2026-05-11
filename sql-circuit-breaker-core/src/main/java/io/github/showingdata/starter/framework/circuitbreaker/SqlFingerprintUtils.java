@@ -22,10 +22,14 @@ public class SqlFingerprintUtils {
     private static final Pattern HASH_COMMENT_PATTERN = Pattern.compile("#[^\\n]*");
     private static final Pattern MULTI_LINE_COMMENT_PATTERN = Pattern.compile("/\\*.*?\\*/", Pattern.DOTALL);
     private static final Pattern NUMBER_PATTERN = Pattern.compile("\\b\\d+\\b");
+    // <foreach> 展开的 IN 子句长度随列表大小变化（如 IN (?,?) vs IN (?,?,?)），
+    // 归一化为 IN (?) 确保同一逻辑查询产生相同指纹，防止熔断状态按列表大小碎片化。
+    // 仅匹配纯占位符 IN 子句（只含 ?、,、空白），不影响 IN (subquery) 场景。
+    private static final Pattern IN_CLAUSE_PATTERN = Pattern.compile("\\bin\\s*\\([\\s?,]+\\)", Pattern.CASE_INSENSITIVE);
     private static final Pattern WHITESPACE_PATTERN = Pattern.compile("\\s+");
 
     /**
-     * 提取 SQL 指纹：替换字符串字面量 → 去注释 → 小写 → 替换数字为 ? → 合并空白。
+     * 提取 SQL 指纹：替换字符串字面量 → 去注释 → 小写 → 替换数字为 ? → 归一化 IN 子句 → 合并空白。
      * 参数值不同但结构相同的 SQL 产生相同指纹，作为熔断匹配单位。
      */
     public static String extract(String sql) {
@@ -38,9 +42,10 @@ public class SqlFingerprintUtils {
         s = SINGLE_LINE_COMMENT_PATTERN.matcher(s).replaceAll("");
         s = HASH_COMMENT_PATTERN.matcher(s).replaceAll("");
         s = MULTI_LINE_COMMENT_PATTERN.matcher(s).replaceAll("");
-        // 3. 统一小写，替换数字，合并空白
+        // 3. 统一小写，替换数字，归一化 IN 子句，合并空白
         s = s.toLowerCase().trim();
         s = NUMBER_PATTERN.matcher(s).replaceAll("?");
+        s = IN_CLAUSE_PATTERN.matcher(s).replaceAll("in (?)");
         return WHITESPACE_PATTERN.matcher(s).replaceAll(" ");
     }
 
