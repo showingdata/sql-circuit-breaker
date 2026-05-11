@@ -42,9 +42,9 @@ public class CircuitBreakerState {
     }
 
     /**
-     * SQL 指纹，用于日志中标识是哪条 SQL 的熔断状态
+     * 熔断 key（dsKey:sqlType:fingerprintHash），用于日志中标识是哪个熔断器
      */
-    private final String sqlFingerprint;
+    private final String circuitKey;
     /**
      * 当前熔断状态
      */
@@ -66,12 +66,12 @@ public class CircuitBreakerState {
      */
     private final AtomicLong lastFastFailLogTime = new AtomicLong(0);
 
-    public CircuitBreakerState(String sqlFingerprint) {
-        this.sqlFingerprint = sqlFingerprint;
+    public CircuitBreakerState(String circuitKey) {
+        this.circuitKey = circuitKey;
     }
 
-    public String getSqlFingerprint() {
-        return sqlFingerprint;
+    public String getCircuitKey() {
+        return circuitKey;
     }
 
     public long getOpenTimestamp() {
@@ -104,7 +104,7 @@ public class CircuitBreakerState {
                 if (state == State.OPEN && System.currentTimeMillis() - openTimestamp > circuitOpenMs) {
                     state = State.CLOSED;
                     consecutiveFail = 0;
-                    log.info("[SqlCircuitBreaker] 熔断到期，自动重置为 CLOSED | key={}", sqlFingerprint);
+                    log.info("[SqlCircuitBreaker] 熔断到期，自动重置为 CLOSED | key={}", circuitKey);
                 }
             }
             // 无论是否重置成功，重新读取 state：若仍为 OPEN（被 onTimeout 刷新了时间戳），返回 true
