@@ -15,7 +15,7 @@ import io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuit
 import io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -48,11 +48,10 @@ import org.springframework.context.annotation.Configuration;
  * </ul>
  * </p>
  */
-@Configuration
+@AutoConfiguration(afterName = "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration")
 @EnableConfigurationProperties(SqlCircuitBreakerProperties.class)
 @ConditionalOnClass(name = "org.apache.ibatis.plugin.Interceptor")
 @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "enabled", havingValue = "true", matchIfMissing = false)
-@AutoConfigureAfter(name = "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration")
 public class SqlCircuitBreakerAutoConfiguration {
 
     @Value("${spring.application.name:unknown}")

@@ -41,16 +41,16 @@
     </modules>
 
     <properties>
-        <java.version>8</java.version>
-        <maven.compiler.source>8</maven.compiler.source>
-        <maven.compiler.target>8</maven.compiler.target>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <spring-boot.version>2.6.3</spring-boot.version>
-        <mybatis-plus.version>3.5.1</mybatis-plus.version>
-        <mybatis.version>3.5.9</mybatis.version>
-        <lombok.version>1.18.22</lombok.version>
-        <guava.version>27.0.1-jre</guava.version>
-        <micrometer-core.version>1.8.2</micrometer-core.version>
+        <spring-boot.version>3.2.0</spring-boot.version>
+        <mybatis-plus.version>3.5.5</mybatis-plus.version>
+        <mybatis.version>3.5.14</mybatis.version>
+        <lombok.version>1.18.30</lombok.version>
+        <guava.version>33.0.0-jre</guava.version>
+        <micrometer-core.version>1.12.0</micrometer-core.version>
     </properties>
 
     <dependencyManagement>
@@ -64,7 +64,7 @@
             </dependency>
             <dependency>
                 <groupId>com.baomidou</groupId>
-                <artifactId>mybatis-plus-boot-starter</artifactId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
                 <version>${mybatis-plus.version}</version>
             </dependency>
             <dependency>
@@ -97,6 +97,16 @@
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <encoding>${project.build.sourceEncoding}</encoding>
+                </configuration>
+            </plugin>
             <!-- 打 sources jar，Maven Central 必须 -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
