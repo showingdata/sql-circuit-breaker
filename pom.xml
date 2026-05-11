@@ -37,7 +37,7 @@
 
     <modules>
         <module>sql-circuit-breaker-core</module>
-        <module>sql-circuit-breaker-spring-boot-starter</module>
+        <module>sql-circuit-breaker-spring-boot3-starter</module>
     </modules>
 
     <properties>

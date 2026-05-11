@@ -10,8 +10,8 @@
         <version>2.0.0</version>
     </parent>
 
-    <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <name>sql-circuit-breaker-spring-boot-starter</name>
+    <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
+    <name>sql-circuit-breaker-spring-boot3-starter</name>
 
     <dependencies>
 
