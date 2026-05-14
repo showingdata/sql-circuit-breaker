@@ -340,7 +340,7 @@ SDK 自动注册以下 5 项指标：
 - `sql_type`：SQL 类型，值为 `SELECT` / `INSERT` / `UPDATE` / `DELETE`
 - `mapper_id`：Mapper 全限定方法名，如 `com.example.mapper.OrderMapper.queryByUserId`
 
-> `sql.circuit.breaker.intercept.total` 在启动时即完成预注册（四种 SQL 类型各一个 Counter），在 `/actuator/metrics` 接口中首次 SQL 执行前也可见。
+> 所有 5 项指标均在启动时完成预注册，`/actuator/metrics` 首次访问即可见全部指标名称，无需等待 SQL 执行或熔断事件发生。其中 `timeout` / `open` / `fast.fail` 预注册时以空字符串作为 `mapper_id` 占位，运行期动态注册的真实 Mapper 条目与之独立共存。
 
 #### 访问端点
 
@@ -526,6 +526,7 @@ SDK 通过 `@ConditionalOnMissingBean` 检测，存在自定义实现时自动�
 | 模块 | 说明 |
 |---|---|
 | `SqlCircuitBreakerInterceptor` | 核心拦截器，MyBatis / MyBatis-Plus 自动收集注册 |
+| `CircuitBreakerCore` | 熔断核心流程（配置解析 → 状态判断 → 计时 → 超时处理），被拦截器复用 |
 | `CircuitBreakerRegistry` | 熔断状态注册中心，按 SQL 类型维护 4 个独立 Guava Cache |
 | `CircuitBreakerState` | 单个 SQL 指纹的两状态（CLOSED/OPEN）状态机 |
 | `SqlCircuitBreakerProperties` | 全局配置映射（application.yml），按 SQL 类型独立配置 |
