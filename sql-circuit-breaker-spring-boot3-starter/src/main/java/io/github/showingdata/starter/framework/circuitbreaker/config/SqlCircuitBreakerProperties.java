@@ -3,7 +3,6 @@ package io.github.showingdata.starter.framework.circuitbreaker.config;
 import lombok.Data;
 import org.apache.ibatis.mapping.SqlCommandType;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.core.Ordered;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,16 +48,15 @@ public class SqlCircuitBreakerProperties {
 
     private boolean enabled = false;
 
-    /**
-     * MyBatis 拦截器顺序，值越小越先注册（后注册的在最外层先执行）。
-     * 默认最低优先级，确保熔断器在拦截器链最外层最先执行。
-     */
-    private int interceptorOrder = Ordered.LOWEST_PRECEDENCE;
-
     private SqlTypeConfig select;
     private SqlTypeConfig insert;
     private SqlTypeConfig update;
     private SqlTypeConfig delete;
+
+    /**
+     * 指标采集相关配置。无需配置即使用默认值（含 mapper_id 标签，最大细粒度）。
+     */
+    private MetricsConfig metrics = new MetricsConfig();
 
     /**
      * 根据 SQL 类型获取对应的配置块。
@@ -110,6 +108,26 @@ public class SqlCircuitBreakerProperties {
             throw new IllegalStateException(
                     "[SqlCircuitBreaker] 配置不合法：\n  - " + String.join("\n  - ", errors));
         }
+    }
+
+    /**
+     * 指标配置：控制 Micrometer 指标的标签粒度，用于平衡可观测性细度与时间序列基数。
+     */
+    @Data
+    public static class MetricsConfig {
+
+        /**
+         * timeout / open / fast.fail 三项指标是否带 mapper_id 标签。
+         * <p>
+         * - true（默认）：保留 mapper_id 标签，Grafana 可按 Mapper 维度排序定位问题，
+         *   但时间序列数 = Mapper 方法数 × SQL 类型数 × 3，大型系统（数百 Mapper × 多副本 × 多服务）
+         *   可能撑爆 Prometheus 后端的时间序列预算。<br>
+         * - false：去掉 mapper_id 标签，三项指标仅按 sql_type 聚合，时间序列数固定为 12，
+         *   定位具体 Mapper 改用日志中的 mapper 字段（`[SqlCircuitBreaker] 熔断开启 | mapper=xxx`）。
+         * <p>
+         * intercept.total 和 open.count 不受此开关影响（前者本就无 mapper_id 标签，后者是 Gauge）。
+         */
+        private boolean includeMapperId = true;
     }
 
     /**

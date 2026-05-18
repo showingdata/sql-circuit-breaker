@@ -10,7 +10,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>2.0.0</version>
+    <version>2.1.0</version>
 </dependency>
 ```
 
@@ -311,27 +311,192 @@ public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
 
 ### 4.6 Metrics 指标（Micrometer）
 
-项目引入 `spring-boot-actuator`（已传递 `micrometer-core`）后，SDK 自动激活以下 5 项指标，无需任何额外配置：
+#### 激活方式
+
+引入 `spring-boot-actuator` 即可，SDK 自动检测并激活真实指标实现，无需任何额外配置：
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+```
+
+未引入 `spring-boot-actuator` 时，所有指标降级为空操作，SDK 正常运行不受任何影响。
+
+#### 指标清单
+
+SDK 自动注册以下 5 项指标：
 
 | 指标名 | 类型 | 标签 | 说明 |
 |---|---|---|---|
-| `sql.circuit.breaker.intercept.total` | Counter | `sql_type` | 拦截器处理的 SQL 总次数（UNKNOWN/FLUSH 不计） |
-| `sql.circuit.breaker.timeout` | Counter | `sql_type`, `mapper_id` | SQL 执行超时次数 |
+| `sql.circuit.breaker.intercept.total` | Counter | `sql_type` | 拦截器处理的 SQL 总次数（UNKNOWN/FLUSH 不计入） |
+| `sql.circuit.breaker.timeout` | Counter | `sql_type`, `mapper_id` | SQL 执行超时次数（耗时超过阈值） |
 | `sql.circuit.breaker.open` | Counter | `sql_type`, `mapper_id` | 熔断器开启次数（CLOSED → OPEN） |
-| `sql.circuit.breaker.fast.fail` | Counter | `sql_type`, `mapper_id` | 快速失败次数 |
-| `sql.circuit.breaker.open.count` | Gauge | 无 | 当前处于 OPEN 状态的熔断器数量 |
+| `sql.circuit.breaker.fast.fail` | Counter | `sql_type`, `mapper_id` | 熔断期间快速失败次数 |
+| `sql.circuit.breaker.open.count` | Gauge | 无 | 当前处于 OPEN 状态的熔断器数量（实时） |
 
-不引入 Micrometer 时所有指标退化为空操作，SDK 正常运行不受影响。
+标签说明：
+- `sql_type`：SQL 类型，值为 `SELECT` / `INSERT` / `UPDATE` / `DELETE`
+- `mapper_id`：Mapper 全限定方法名，如 `com.example.mapper.OrderMapper.queryByUserId`
 
-Prometheus 抓取示例（配合 Grafana 告警）：
+> 所有 5 项指标均在启动时完成预注册，`/actuator/metrics` 首次访问即可见全部指标名称，无需等待 SQL 执行或熔断事件发生。其中 `timeout` / `open` / `fast.fail` 预注册时以空字符串作为 `mapper_id` 占位，运行期动态注册的真实 Mapper 条目与之独立共存。
+
+#### 高基数场景：关闭 mapper_id 标签
+
+`timeout` / `open` / `fast.fail` 三项指标默认带 `mapper_id` 标签，**单服务的时间序列数 ≈ Mapper 方法数 × 4 × 3**。大型系统（数百 Mapper × 多副本 × 多服务）下 Prometheus 时间序列容易膨胀（同时也增加 VictoriaMetrics / Mimir 等按 series 计费后端的成本）。
+
+可通过配置关闭 `mapper_id` 标签，三项指标退化为仅按 `sql_type` 聚合，时间序列数从 N × 12 收敛到固定 12：
+
+```yaml
+sql-circuit-breaker:
+  metrics:
+    include-mapper-id: false   # 默认 true；规模大或对 series 基数敏感时关掉
+```
+
+关闭后定位具体 Mapper 改用日志中的 mapper 字段，例如：
+```
+[SqlCircuitBreaker] 熔断开启 | key=default:SELECT:a3f2c1... | mapper=com.example.mapper.OrderMapper.queryByUserId | ...
+```
+
+`intercept.total`（无 mapper_id）和 `open.count`（Gauge 无标签）不受此开关影响。
+
+#### 访问端点
+
+通过 `/actuator/metrics` 查看指标：
+
+```yaml
+# application.yml 开放端点（按需配置）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: metrics, prometheus
+```
+
+```
+# 查看某项指标当前值
+GET /actuator/metrics/sql.circuit.breaker.open.count
+
+# 按 sql_type 过滤
+GET /actuator/metrics/sql.circuit.breaker.timeout?tag=sql_type:SELECT
+```
+
+#### Prometheus + Grafana 告警示例
 
 ```promql
-# 近 5 分钟快速失败速率
+# 近 5 分钟内各 Mapper 快速失败速率（用于告警触发）
 rate(sql_circuit_breaker_fast_fail_total[5m])
 
-# 当前有多少熔断器处于 OPEN 状态
+# 近 5 分钟内超时速率（按 SQL 类型聚合）
+sum by (sql_type) (rate(sql_circuit_breaker_timeout_total[5m]))
+
+# 当前处于 OPEN 状态的熔断器数量（> 0 即告警）
 sql_circuit_breaker_open_count
+
+# 熔断开启频率（近 1 小时，按 Mapper 排列）
+topk(10, sum by (mapper_id) (increase(sql_circuit_breaker_open_total[1h])))
 ```
+
+建议对 `sql_circuit_breaker_open_count > 0` 配置即时告警，该 Gauge 归零说明所有熔断器已自动恢复，无需手动处理。
+
+#### 自定义指标实现
+
+若项目未使用 Micrometer（如使用其他监控体系），可实现 `SqlCircuitBreakerMetrics` 接口并注册为 Spring Bean 接入自有监控：
+
+```java
+@Component
+public class CustomCircuitBreakerMetrics implements SqlCircuitBreakerMetrics {
+
+    @Override
+    public void recordIntercept(String sqlType) { ... }
+
+    @Override
+    public void recordTimeout(String sqlType, String mapperId) { ... }
+
+    @Override
+    public void recordOpen(String sqlType, String mapperId) { ... }
+
+    @Override
+    public void recordFastFail(String sqlType, String mapperId) { ... }
+}
+```
+
+SDK 通过 `@ConditionalOnMissingBean` 检测，存在自定义实现时自动跳过 Micrometer 实现的注册。
+
+### 4.7 业务调用栈定位（推荐：全局异常处理）
+
+`SqlCircuitBreakerException` 重写了 `fillInStackTrace()` 跳过堆栈填充，规避高并发快速失败下频繁填栈的 CPU/内存开销。代价是异常对象本身**不带堆栈**，业务方仅靠该异常无法定位具体调用方代码行。
+
+好在 MyBatis 抛出时会用 `MyBatisSystemException` 二次包装并填栈，**包装异常的堆栈包含完整的业务调用链**（Controller → Service → Mapper 代理 → MyBatis 拦截器链）。Web 项目加一个 `@RestControllerAdvice` 即可统一接住快速失败并打印业务调用栈：
+
+```java
+@Slf4j
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(MyBatisSystemException.class)
+    public ResponseEntity<Map<String, Object>> handleMyBatis(MyBatisSystemException ex) {
+        SqlCircuitBreakerException cb = findCircuitBreaker(ex);
+        if (cb != null) {
+            // 关键：用包装异常打栈，里面有 Controller / Service / Mapper 调用行号
+            log.error("[GlobalExceptionHandler] SQL 熔断快速失败 | key={} | 业务调用栈见下方",
+                    cb.getCircuitKey(), ex);
+            return circuitBreakerResponse(cb);
+        }
+        log.error("[GlobalExceptionHandler] MyBatis 异常: {}", ex.getMessage(), ex);
+        return errorResponse("db_error", ex.getMessage());
+    }
+
+    @ExceptionHandler(SqlCircuitBreakerException.class)
+    public ResponseEntity<Map<String, Object>> handleCircuitBreaker(SqlCircuitBreakerException ex) {
+        // 兜底：未被 MyBatis 包装直抛的极少数场景，无堆栈可用
+        log.error("[GlobalExceptionHandler] SQL 熔断快速失败（无包装栈）| key={} | msg={}",
+                ex.getCircuitKey(), ex.getMessage());
+        return circuitBreakerResponse(ex);
+    }
+
+    private SqlCircuitBreakerException findCircuitBreaker(Throwable ex) {
+        Throwable cur = ex;
+        while (cur != null) {
+            if (cur instanceof SqlCircuitBreakerException) {
+                return (SqlCircuitBreakerException) cur;
+            }
+            cur = cur.getCause();
+        }
+        return null;
+    }
+
+    private ResponseEntity<Map<String, Object>> circuitBreakerResponse(SqlCircuitBreakerException cb) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("status", "circuit_open");
+        body.put("circuitKey", cb.getCircuitKey());
+        body.put("msg", cb.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body);
+    }
+
+    private ResponseEntity<Map<String, Object>> errorResponse(String status, String msg) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("status", status);
+        body.put("msg", msg);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+    }
+}
+```
+
+接入后日志效果：
+
+```
+[ERROR] ... GlobalExceptionHandler - [GlobalExceptionHandler] SQL 熔断快速失败 | key=default:SELECT:a3f2c1... | 业务调用栈见下方
+org.mybatis.spring.MyBatisSystemException: nested exception is ...
+    at org.mybatis.spring.MyBatisExceptionTranslator.translateExceptionIfPossible(...)
+    ...
+    at com.example.service.OrderService.queryByUser(OrderService.java:42)        ← 业务行号
+    at com.example.controller.DemoController.listOrders(DemoController.java:88)  ← Controller 行号
+    ...
+```
+
+> **注意**：业务方在 Controller / Service 中用 `catch (SqlCircuitBreakerException e)` 直接捕获是**捕获不到**的——实际抛出的类型是包装后的 `MyBatisSystemException`，`instanceof` 不匹配。统一通过全局 advice 接住，不要在业务代码里直接 try/catch 该异常。
 
 
 ## 5. 日志格式
@@ -352,18 +517,54 @@ sql_circuit_breaker_open_count
 [SqlCircuitBreaker] 熔断开启 | key=default:SELECT:a3f2c1d9ef... | 熔断时长=60000ms | 开始=2026-05-03 10:23:45 | 预计恢复=2026-05-03 10:24:45
 ```
 
-如需将 SDK 日志单独隔离，可在 `logback.xml` 中配置独立 Appender：
+如需将 SDK 日志单独隔离，可在 `logback.xml` / `logback-spring.xml` 中配置独立 Appender：
 
 ```xml
-<logger name="io.github.showingdata.starter.framework.circuitbreaker" level="WARN" additivity="false">
-    <appender-ref ref="CIRCUIT_BREAKER_FILE"/>
-</logger>
+<configuration>
+    <!-- Spring Boot 项目：路径跟随 application.yml 的 logging.file.path -->
+    <springProperty scope="context" name="LOG_HOME" source="logging.file.path" defaultValue="./logs"/>
+
+    <!-- 1. 定义 SDK 专属 appender -->
+    <appender name="CIRCUIT_BREAKER_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_HOME}/sql-circuit-breaker.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_HOME}/sql-circuit-breaker.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+                <maxFileSize>50MB</maxFileSize>
+            </timeBasedFileNamingAndTriggeringPolicy>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] [%thread] %logger{50} [%line] - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 2. SDK 包路径下所有日志只走该 appender，不再传播到 root -->
+    <logger name="io.github.showingdata.starter.framework.circuitbreaker" level="WARN" additivity="false">
+        <appender-ref ref="CIRCUIT_BREAKER_FILE"/>
+    </logger>
+
+    <!-- 3. 业务自己的 root 配置保持原样 -->
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+        <!-- 业务原有 appender ... -->
+    </root>
+</configuration>
 ```
+
+三个容易踩坑的关键点：
+
+| 关键点 | 说明 |
+|---|---|
+| `additivity="false"` | **必加**。否则 SDK 日志会同时打到 root 的 appender，业务主日志里依然混入熔断日志，等于没隔离 |
+| `level="WARN"` | SDK 的事件日志（超时 / 熔断开启 / 快速失败）都是 ERROR 级，"熔断重置"是 INFO 级。设 WARN 表示只关心异常事件；要全量诊断改成 INFO |
+| `<file>` 路径独立 | 不要复用业务的 info / error 文件名，否则失去隔离意义 |
 
 
 ## 6. 注意事项
 
-1. **ThreadLocal 必须 clear**：在 finally 块中调用 `SqlCircuitBreakerContext.clear()`，否则在线程池复用场景下会污染下一次请求。拦截器的 finally 块会兜底清理一次，但业务代码自己也应在 finally 中显式清理。
+1. **ThreadLocal 必须由调用方 clear**：在 finally 块中调用 `SqlCircuitBreakerContext.clear()`，否则在线程池复用场景下会污染下一次请求。拦截器**不再做兜底清理**——这样设计是为了让 Service 层 set 一次 ThreadLocal 后，能对其调用的多条 Mapper SQL 统一生效（若拦截器在第一条 SQL 执行后清理，从第二条 SQL 起 ThreadLocal 就会失效）。拦截器在入口对 ThreadLocal 做一次快照，整次 intercept 调用使用同一份快照，不受调用方在执行过程中变更 ThreadLocal 的影响。
 
 2. **disableCircuitBreaker 的使用场景**：当某个操作明知 SQL 会慢（如定时任务数据修复、人工补偿脚本），但又不希望触发熔断影响正常业务时，可通过 ThreadLocal 临时关闭熔断，作用范围仅限当前线程本次调用：
 
@@ -454,6 +655,7 @@ sql_circuit_breaker_open_count
 | 模块 | 说明 |
 |---|---|
 | `SqlCircuitBreakerInterceptor` | 核心拦截器，MyBatis / MyBatis-Plus 自动收集注册 |
+| `CircuitBreakerCore` | 熔断核心流程（配置解析 → 状态判断 → 计时 → 超时处理），被拦截器复用 |
 | `CircuitBreakerRegistry` | 熔断状态注册中心，按 SQL 类型维护 4 个独立 Guava Cache |
 | `CircuitBreakerState` | 单个 SQL 指纹的两状态（CLOSED/OPEN）状态机 |
 | `SqlCircuitBreakerProperties` | 全局配置映射（application.yml），按 SQL 类型独立配置 |

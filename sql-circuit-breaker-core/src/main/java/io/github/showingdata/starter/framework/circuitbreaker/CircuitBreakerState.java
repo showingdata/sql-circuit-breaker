@@ -66,8 +66,16 @@ public class CircuitBreakerState {
      */
     private final AtomicLong lastFastFailLogTime = new AtomicLong(0);
 
-    public CircuitBreakerState(String circuitKey) {
+    /**
+     * 全局 OPEN 状态计数器（所有 State 实例共享同一个引用，由 Registry 持有）。
+     * 状态切换时在本类内部增减，供 Gauge 指标 O(1) 读取，避免 Prometheus 每次 scrape
+     * 都对 4 个 Guava Cache 全量扫描。
+     */
+    private final AtomicLong openCount;
+
+    public CircuitBreakerState(String circuitKey, AtomicLong openCount) {
         this.circuitKey = circuitKey;
+        this.openCount = openCount;
     }
 
     public String getCircuitKey() {
@@ -104,6 +112,7 @@ public class CircuitBreakerState {
                 if (state == State.OPEN && System.currentTimeMillis() - openTimestamp > circuitOpenMs) {
                     state = State.CLOSED;
                     consecutiveFail = 0;
+                    openCount.decrementAndGet();
                     log.info("[SqlCircuitBreaker] 熔断到期，自动重置为 CLOSED | key={}", circuitKey);
                 }
             }
@@ -114,18 +123,40 @@ public class CircuitBreakerState {
     }
 
     /**
-     * SQL 执行超时时调用。返回 true 表示本次调用触发了熔断（状态由 CLOSED → OPEN）。
+     * SQL 执行超时时调用。返回 true 表示本次调用触发了熔断或刷新了 OPEN 窗口。
+     * 仅在 CLOSED → OPEN 的真实转换时增加 openCount，避免并发场景下 OPEN → OPEN 的窗口刷新
+     * 被重复计数（场景：T1 isOpen()=false 后正要执行 SQL，T2 onTimeout 已转 OPEN；
+     * T1 SQL 慢，回头也调 onTimeout 时 state 已是 OPEN，此时不应再 +1）。
      */
     public synchronized boolean onTimeout(int failureThreshold, long circuitOpenMs) {
         consecutiveFail++;
         if (consecutiveFail >= failureThreshold) {
+            boolean wasClosed = (state == State.CLOSED);
             state = State.OPEN;
             openTimestamp = System.currentTimeMillis();
             this.circuitOpenMs = circuitOpenMs;
             consecutiveFail = 0;
+            if (wasClosed) {
+                openCount.incrementAndGet();
+            }
             return true;
         }
         return false;
+    }
+
+    /**
+     * Cache 驱逐时调用：若被驱逐的条目处于 OPEN 状态，减少 openCount 防止计数漏减。
+     * 场景：cache-max-size 达到上限时 LRU 驱逐了一个尚未到期的 OPEN 条目，
+     * 此时 isOpen() 的自动重置不会被触发，需通过 Cache 的 removalListener 显式通知。
+     * <p>
+     * 与 isOpen() / onTimeout 共享 synchronized 锁，保证状态切换与计数器更新的原子性。
+     */
+    public synchronized void onEvicted() {
+        if (state == State.OPEN) {
+            state = State.CLOSED;
+            consecutiveFail = 0;
+            openCount.decrementAndGet();
+        }
     }
 
     /**

@@ -17,12 +17,14 @@ public class SqlCircuitBreakerBanner {
 
     private static final String BANNER_RESOURCE = "sql-circuit-breaker-banner.txt";
     private static final String GITHUB = "https://github.com/showingdata/sql-circuit-breaker";
+    private static final String GITEE = "https://gitee.com/LanyXP/sql-circuit-breaker";
 
     public static void print(PrintStream out) {
         printBannerText(out);
         String version = getVersion();
         out.printf(" :: SQL Circuit Breaker :: Spring Boot Starter ::  (v%s)%n", version);
         out.printf(" :: %-71s ::%n", GITHUB);
+        out.printf(" :: %-71s ::%n", GITEE);
         out.println();
     }
 
@@ -44,6 +46,6 @@ public class SqlCircuitBreakerBanner {
     private static String getVersion() {
         Package pkg = SqlCircuitBreakerBanner.class.getPackage();
         String version = (pkg != null) ? pkg.getImplementationVersion() : null;
-        return (version != null) ? version : "3.0.0";
+        return (version != null) ? version : "2.1.0";
     }
 }

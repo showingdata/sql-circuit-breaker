@@ -1,7 +1,6 @@
 package io.github.showingdata.starter.framework.circuitbreaker.config;
 
 import io.github.showingdata.starter.framework.circuitbreaker.annotation.SqlCircuitBreaker;
-import io.github.showingdata.starter.framework.circuitbreaker.context.SqlCircuitBreakerContext;
 import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.mapping.SqlCommandType;
 import org.slf4j.Logger;
@@ -45,10 +44,11 @@ public class ConfigResolver {
 
     /**
      * 按优先级解析配置：ThreadLocal > 方法注解 > 接口注解 > 全局配置（按 SQL 类型精确取值）。
+     * <p>
+     * ThreadLocal 快照由调用方在拦截器入口一次性读取传入，本方法内部不再访问 ThreadLocal，
+     * 保证整次 intercept 调用看到的 ThreadLocal 配置一致，且不受调用方提前 clear() 影响。
      */
-    public ResolvedConfig resolve(MappedStatement ms, SqlCommandType sqlType) {
-        SqlCircuitBreakerConfig tl = SqlCircuitBreakerContext.get();
-
+    public ResolvedConfig resolve(MappedStatement ms, SqlCommandType sqlType, SqlCircuitBreakerConfig tl) {
         // 注解首次解析时一并校验，结果缓存后后续请求直接命中缓存，无需重复校验。
         // validateAnnotation 抛 IllegalArgumentException（unchecked），可在 lambda 内直接抛出。
         AnnotationPair pair = annotationCache.computeIfAbsent(ms.getId(), k -> {

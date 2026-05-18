@@ -7,6 +7,7 @@ import io.github.showingdata.starter.framework.circuitbreaker.SqlFingerprintUtil
 import io.github.showingdata.starter.framework.circuitbreaker.context.SqlCircuitBreakerContext;
 import io.github.showingdata.starter.framework.circuitbreaker.config.ConfigResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.config.ResolvedConfig;
+import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitBreakerConfig;
 import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitBreakerProperties;
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.message.MessageCenterClient;
@@ -123,92 +124,95 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
 
     @Override
     public Object intercept(Invocation invocation) throws Throwable {
-        try {
-            // 步骤1：全局开关未开启，直接放行，不做任何熔断处理
-            if (!props.isEnabled()) {
-                return invocation.proceed();
-            }
-
-            // 步骤2：获取 SQL 类型，仅对 SELECT/INSERT/UPDATE/DELETE 生效，UNKNOWN/FLUSH 直接放行
-            MappedStatement ms = (MappedStatement) invocation.getArgs()[0];
-            SqlCommandType sqlType = ms.getSqlCommandType();
-            if (sqlType == SqlCommandType.UNKNOWN || sqlType == SqlCommandType.FLUSH) {
-                return invocation.proceed();
-            }
-
-            metrics.recordIntercept(sqlType.name());
-
-            // 步骤3：获取 BoundSql —— 6 参数重载时 args[5] 已是 BoundSql，其余情况通过参数对象动态获取
-            BoundSql boundSql = invocation.getArgs().length == 6 ? (BoundSql) invocation.getArgs()[5] : ms.getBoundSql(invocation.getArgs()[1]);
-
-            // 步骤4：提取 SQL 指纹（将参数值替换为 ?，归一化同类 SQL），用于日志展示
-            // 优先查缓存：同一 Mapper 方法的 SQL 模板通常固定，缓存命中可跳过 6 轮正则 + MD5 计算；
-            // 动态 SQL（<if>/<foreach>）场景下 rawSql 可能变化，equals 不匹配时重新计算并更新缓存。
-            String rawSql = boundSql.getSql();
-            FingerprintEntry entry = fingerprintCache.get(ms.getId());
-            String fingerprint;
-            String fingerprintHash;
-            if (entry != null && Objects.equals(rawSql, entry.rawSql)) {
-                fingerprint = entry.fingerprint;
-                fingerprintHash = entry.hash;
-            } else {
-                fingerprint = SqlFingerprintUtils.extract(rawSql);
-                fingerprintHash = SqlFingerprintUtils.hash(fingerprint);
-                fingerprintCache.put(ms.getId(), new FingerprintEntry(rawSql, fingerprint, fingerprintHash));
-            }
-
-            // 步骤5：生成熔断 key = 数据源ID + SQL类型 + 指纹的 MD5，数据源ID 隔离多数据源场景下的熔断状态
-            String dsKey = dataSourceKeyResolver.resolve(ms);
-            String circuitKey = (dsKey != null ? dsKey : "default") + ":" + sqlType.name() + ":" + fingerprintHash;
-
-            // 步骤6：按优先级解析配置（ThreadLocal > 方法注解 > 接口注解 > 全局配置）
-            ResolvedConfig config = configResolver.resolve(ms, sqlType);
-
-            // 步骤7：注解或 ThreadLocal 声明了 disableCircuitBreaker=true，跳过熔断直接放行
-            if (config.isDisableCircuitBreaker()) {
-                return invocation.proceed();
-            }
-
-            // 步骤8：从注册表获取（或初始化）该 SQL 对应的熔断状态机
-            CircuitBreakerState state = registry.getOrCreate(circuitKey, sqlType);
-
-            // 步骤9：熔断器处于 OPEN 状态，快速失败，不再执行 SQL
-            if (state.isOpen()) {
-                String openAt = formatTs(state.getOpenTimestamp());
-                // 快速失败日志节流：同一 circuitKey 每 5 秒只输出一次，防止高并发下日志风暴
-                if (state.shouldLogFastFail(5000)) {
-                    log.error("[SqlCircuitBreaker] 快速失败 | key={} | mapper={} | sql={} | 熔断时间={} | 熔断时长={}ms", circuitKey, ms.getId(), fingerprint, openAt, state.getCircuitOpenMs());
-                }
-                metrics.recordFastFail(sqlType.name(), ms.getId());
-                throw new SqlCircuitBreakerException(buildFailMessage(ms, circuitKey, fingerprint, sqlType, state, openAt), circuitKey);
-            }
-
-            // 步骤10：执行实际 SQL，并统计耗时
-            long start = System.nanoTime();
-            try {
-                Object result = invocation.proceed();
-                long cost = (System.nanoTime() - start) / 1000000;
-
-                // 步骤11：SQL 执行成功后，根据耗时更新熔断计数
-                if (cost > config.getTimeout()) {
-                    // 耗时超过阈值：累加失败次数，达到 failureThreshold 则触发熔断
-                    handleTimeout(ms, sqlType, circuitKey, fingerprint, cost, config, state);
-                } else {
-                    // 正常成功：重置连续失败计数，保证 failureThreshold 是"连续"语义
-                    state.onSuccess();
-                }
-                return result;
-            } catch (SqlCircuitBreakerException e) {
-                // 步骤12：熔断异常直接上抛，不做额外处理
-                throw e;
-            } catch (Throwable t) {
-                // 步骤13：SQL 执行异常直接透传，不触发熔断
-                throw t;
-            }
-        } finally {
-            // 步骤14：兜底清理 ThreadLocal，防止线程池复用场景下本次配置泄漏到后续不相关请求
-            SqlCircuitBreakerContext.clear();
+        // 步骤1：全局开关未开启，直接放行，不做任何熔断处理
+        if (!props.isEnabled()) {
+            return invocation.proceed();
         }
+
+        // 步骤2：获取 SQL 类型，仅对 SELECT/INSERT/UPDATE/DELETE 生效，UNKNOWN/FLUSH 直接放行
+        MappedStatement ms = (MappedStatement) invocation.getArgs()[0];
+        SqlCommandType sqlType = ms.getSqlCommandType();
+        if (sqlType == SqlCommandType.UNKNOWN || sqlType == SqlCommandType.FLUSH) {
+            return invocation.proceed();
+        }
+
+        metrics.recordIntercept(sqlType.name());
+
+        // 步骤3：入口快照 ThreadLocal 配置，整次调用使用同一份快照。
+        /**ThreadLocal 生命周期由调用方负责（在自己 finally 中 clear()），拦截器不再兜底清理，
+         * 避免业务方在 Service 层 set 后调用多条 Mapper 时，从第二条 SQL 起 ThreadLocal 失效。
+         * public void processOrders(List<Long> ids) {
+         *       try {
+         *           SqlCircuitBreakerContext.setTimeout(60_000);
+         *           orderMapper.selectByIds(ids);        // ✅ 60s
+         *           orderMapper.updateStatus(ids);       // ✅ 60s
+         *           orderMapper.insertAuditLog(ids);     // ✅ 60s
+         *       } finally {
+         *           SqlCircuitBreakerContext.clear();    // 调用方负责
+         *       }
+         *   }
+         */
+        SqlCircuitBreakerConfig tlSnapshot = SqlCircuitBreakerContext.get();
+
+        // 步骤4：获取 BoundSql —— 6 参数重载时 args[5] 已是 BoundSql，其余情况通过参数对象动态获取
+        BoundSql boundSql = invocation.getArgs().length == 6 ? (BoundSql) invocation.getArgs()[5] : ms.getBoundSql(invocation.getArgs()[1]);
+
+        // 步骤5：提取 SQL 指纹（将参数值替换为 ?，归一化同类 SQL），用于日志展示
+        // 优先查缓存：同一 Mapper 方法的 SQL 模板通常固定，缓存命中可跳过 6 轮正则 + MD5 计算；
+        // 动态 SQL（<if>/<foreach>）场景下 rawSql 可能变化，equals 不匹配时重新计算并更新缓存。
+        String rawSql = boundSql.getSql();
+        FingerprintEntry entry = fingerprintCache.get(ms.getId());
+        String fingerprint;
+        String fingerprintHash;
+        if (entry != null && Objects.equals(rawSql, entry.rawSql)) {
+            fingerprint = entry.fingerprint;
+            fingerprintHash = entry.hash;
+        } else {
+            fingerprint = SqlFingerprintUtils.extract(rawSql);
+            fingerprintHash = SqlFingerprintUtils.hash(fingerprint);
+            fingerprintCache.put(ms.getId(), new FingerprintEntry(rawSql, fingerprint, fingerprintHash));
+        }
+
+        // 步骤6：生成熔断 key = 数据源ID + SQL类型 + 指纹的 MD5，数据源ID 隔离多数据源场景下的熔断状态
+        String dsKey = dataSourceKeyResolver.resolve(ms);
+        String circuitKey = (dsKey != null ? dsKey : "default") + ":" + sqlType.name() + ":" + fingerprintHash;
+
+        // 步骤7：按优先级解析配置（ThreadLocal 快照 > 方法注解 > 接口注解 > 全局配置）
+        ResolvedConfig config = configResolver.resolve(ms, sqlType, tlSnapshot);
+
+        // 步骤8：注解或 ThreadLocal 声明了 disableCircuitBreaker=true，跳过熔断直接放行
+        if (config.isDisableCircuitBreaker()) {
+            return invocation.proceed();
+        }
+
+        // 步骤9：从注册表获取（或初始化）该 SQL 对应的熔断状态机
+        CircuitBreakerState state = registry.getOrCreate(circuitKey, sqlType);
+
+        // 步骤10：熔断器处于 OPEN 状态，快速失败，不再执行 SQL
+        if (state.isOpen()) {
+            String openAt = formatTs(state.getOpenTimestamp());
+            // 快速失败日志节流：同一 circuitKey 每 5 秒只输出一次，防止高并发下日志风暴
+            if (state.shouldLogFastFail(5000)) {
+                log.error("[SqlCircuitBreaker] 快速失败 | key={} | mapper={} | sql={} | 熔断时间={} | 熔断时长={}ms", circuitKey, ms.getId(), fingerprint, openAt, state.getCircuitOpenMs());
+            }
+            metrics.recordFastFail(sqlType.name(), ms.getId());
+            throw new SqlCircuitBreakerException(buildFailMessage(ms, circuitKey, fingerprint, sqlType, state, openAt), circuitKey);
+        }
+
+        // 步骤11：执行实际 SQL，并统计耗时
+        long start = System.nanoTime();
+        Object result = invocation.proceed();
+        long cost = (System.nanoTime() - start) / 1000000;
+
+        // 步骤12：SQL 执行成功后，根据耗时更新熔断计数
+        if (cost > config.getTimeout()) {
+            // 耗时超过阈值：累加失败次数，达到 failureThreshold 则触发熔断
+            handleTimeout(ms, sqlType, circuitKey, fingerprint, cost, config, state);
+        } else {
+            // 正常成功：重置连续失败计数，保证 failureThreshold 是"连续"语义
+            state.onSuccess();
+        }
+        return result;
     }
 
     private void handleTimeout(MappedStatement ms, SqlCommandType sqlType,
@@ -275,6 +279,7 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
 
     @Override
     public int getOrder() {
+        // 固定最低优先级，保证熔断器位于 MyBatis 拦截器链最外层（最先执行），不开放配置避免误用
         return Ordered.LOWEST_PRECEDENCE;
     }
 
