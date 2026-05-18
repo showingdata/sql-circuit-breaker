@@ -59,6 +59,7 @@ public class SqlCircuitBreakerAutoConfiguration {
     private String applicationName;
 
     @Bean
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "banner-enabled", havingValue = "true", matchIfMissing = true)
     public ApplicationListener<ApplicationReadyEvent> sqlCircuitBreakerBannerPrinter() {
         return event -> SqlCircuitBreakerBanner.print(System.out);
     }
