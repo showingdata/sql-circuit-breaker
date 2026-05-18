@@ -4,12 +4,33 @@
 
 ## 快速接入
 
+> **版本对应关系（请按 Spring Boot 版本选择对应 artifactId / 分支）**
+>
+> | Spring Boot | JDK | artifactId | 分支 |
+> |---|---|---|---|
+> | 2.x | 8+ | `sql-circuit-breaker-spring-boot-starter` | `master` |
+> | 3.x | 17+ | `sql-circuit-breaker-spring-boot3-starter` | `springboot3` |
+>
+> 两个 starter 共用同一份 `sql-circuit-breaker-core`，核心熔断逻辑完全一致，仅自动装配机制和依赖坐标按 Spring Boot 版本适配。
+
 ### 1. 引入依赖
+
+**Spring Boot 2.x：**
 
 ```xml
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
+    <version>2.1.0</version>
+</dependency>
+```
+
+**Spring Boot 3.x：**
+
+```xml
+<dependency>
+    <groupId>io.github.showingdata.starter.framework</groupId>
+    <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
     <version>2.1.0</version>
 </dependency>
 ```
