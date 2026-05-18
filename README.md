@@ -517,13 +517,49 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
 [SqlCircuitBreaker] 熔断开启 | key=default:SELECT:a3f2c1d9ef... | 熔断时长=60000ms | 开始=2026-05-03 10:23:45 | 预计恢复=2026-05-03 10:24:45
 ```
 
-如需将 SDK 日志单独隔离，可在 `logback.xml` 中配置独立 Appender：
+如需将 SDK 日志单独隔离，可在 `logback.xml` / `logback-spring.xml` 中配置独立 Appender：
 
 ```xml
-<logger name="io.github.showingdata.starter.framework.circuitbreaker" level="WARN" additivity="false">
-    <appender-ref ref="CIRCUIT_BREAKER_FILE"/>
-</logger>
+<configuration>
+    <!-- Spring Boot 项目：路径跟随 application.yml 的 logging.file.path -->
+    <springProperty scope="context" name="LOG_HOME" source="logging.file.path" defaultValue="./logs"/>
+
+    <!-- 1. 定义 SDK 专属 appender -->
+    <appender name="CIRCUIT_BREAKER_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_HOME}/sql-circuit-breaker.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_HOME}/sql-circuit-breaker.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+                <maxFileSize>50MB</maxFileSize>
+            </timeBasedFileNamingAndTriggeringPolicy>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] [%thread] %logger{50} [%line] - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 2. SDK 包路径下所有日志只走该 appender，不再传播到 root -->
+    <logger name="io.github.showingdata.starter.framework.circuitbreaker" level="WARN" additivity="false">
+        <appender-ref ref="CIRCUIT_BREAKER_FILE"/>
+    </logger>
+
+    <!-- 3. 业务自己的 root 配置保持原样 -->
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+        <!-- 业务原有 appender ... -->
+    </root>
+</configuration>
 ```
+
+三个容易踩坑的关键点：
+
+| 关键点 | 说明 |
+|---|---|
+| `additivity="false"` | **必加**。否则 SDK 日志会同时打到 root 的 appender，业务主日志里依然混入熔断日志，等于没隔离 |
+| `level="WARN"` | SDK 的事件日志（超时 / 熔断开启 / 快速失败）都是 ERROR 级，"熔断重置"是 INFO 级。设 WARN 表示只关心异常事件；要全量诊断改成 INFO |
+| `<file>` 路径独立 | 不要复用业务的 info / error 文件名，否则失去隔离意义 |
 
 
 ## 6. 注意事项
