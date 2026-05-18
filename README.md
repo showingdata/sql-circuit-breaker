@@ -424,6 +424,80 @@ public class CustomCircuitBreakerMetrics implements SqlCircuitBreakerMetrics {
 
 SDK 通过 `@ConditionalOnMissingBean` 检测，存在自定义实现时自动跳过 Micrometer 实现的注册。
 
+### 4.7 业务调用栈定位（推荐：全局异常处理）
+
+`SqlCircuitBreakerException` 重写了 `fillInStackTrace()` 跳过堆栈填充，规避高并发快速失败下频繁填栈的 CPU/内存开销。代价是异常对象本身**不带堆栈**，业务方仅靠该异常无法定位具体调用方代码行。
+
+好在 MyBatis 抛出时会用 `MyBatisSystemException` 二次包装并填栈，**包装异常的堆栈包含完整的业务调用链**（Controller → Service → Mapper 代理 → MyBatis 拦截器链）。Web 项目加一个 `@RestControllerAdvice` 即可统一接住快速失败并打印业务调用栈：
+
+```java
+@Slf4j
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(MyBatisSystemException.class)
+    public ResponseEntity<Map<String, Object>> handleMyBatis(MyBatisSystemException ex) {
+        SqlCircuitBreakerException cb = findCircuitBreaker(ex);
+        if (cb != null) {
+            // 关键：用包装异常打栈，里面有 Controller / Service / Mapper 调用行号
+            log.error("[GlobalExceptionHandler] SQL 熔断快速失败 | key={} | 业务调用栈见下方",
+                    cb.getCircuitKey(), ex);
+            return circuitBreakerResponse(cb);
+        }
+        log.error("[GlobalExceptionHandler] MyBatis 异常: {}", ex.getMessage(), ex);
+        return errorResponse("db_error", ex.getMessage());
+    }
+
+    @ExceptionHandler(SqlCircuitBreakerException.class)
+    public ResponseEntity<Map<String, Object>> handleCircuitBreaker(SqlCircuitBreakerException ex) {
+        // 兜底：未被 MyBatis 包装直抛的极少数场景，无堆栈可用
+        log.error("[GlobalExceptionHandler] SQL 熔断快速失败（无包装栈）| key={} | msg={}",
+                ex.getCircuitKey(), ex.getMessage());
+        return circuitBreakerResponse(ex);
+    }
+
+    private SqlCircuitBreakerException findCircuitBreaker(Throwable ex) {
+        Throwable cur = ex;
+        while (cur != null) {
+            if (cur instanceof SqlCircuitBreakerException) {
+                return (SqlCircuitBreakerException) cur;
+            }
+            cur = cur.getCause();
+        }
+        return null;
+    }
+
+    private ResponseEntity<Map<String, Object>> circuitBreakerResponse(SqlCircuitBreakerException cb) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("status", "circuit_open");
+        body.put("circuitKey", cb.getCircuitKey());
+        body.put("msg", cb.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body);
+    }
+
+    private ResponseEntity<Map<String, Object>> errorResponse(String status, String msg) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("status", status);
+        body.put("msg", msg);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+    }
+}
+```
+
+接入后日志效果：
+
+```
+[ERROR] ... GlobalExceptionHandler - [GlobalExceptionHandler] SQL 熔断快速失败 | key=default:SELECT:a3f2c1... | 业务调用栈见下方
+org.mybatis.spring.MyBatisSystemException: nested exception is ...
+    at org.mybatis.spring.MyBatisExceptionTranslator.translateExceptionIfPossible(...)
+    ...
+    at com.example.service.OrderService.queryByUser(OrderService.java:42)        ← 业务行号
+    at com.example.controller.DemoController.listOrders(DemoController.java:88)  ← Controller 行号
+    ...
+```
+
+> **注意**：业务方在 Controller / Service 中用 `catch (SqlCircuitBreakerException e)` 直接捕获是**捕获不到**的——实际抛出的类型是包装后的 `MyBatisSystemException`，`instanceof` 不匹配。统一通过全局 advice 接住，不要在业务代码里直接 try/catch 该异常。
+
 
 ## 5. 日志格式
 
