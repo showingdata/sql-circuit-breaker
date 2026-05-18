@@ -111,10 +111,11 @@ public class SqlCircuitBreakerAutoConfiguration {
         @ConditionalOnMissingBean(SqlCircuitBreakerMetrics.class)
         public SqlCircuitBreakerMetrics sqlCircuitBreakerMetrics(
                 ObjectProvider<io.micrometer.core.instrument.MeterRegistry> meterRegistryProvider,
-                CircuitBreakerRegistry circuitBreakerRegistry) {
+                CircuitBreakerRegistry circuitBreakerRegistry,
+                SqlCircuitBreakerProperties props) {
             io.micrometer.core.instrument.MeterRegistry mr = meterRegistryProvider.getIfAvailable();
             if (mr != null) {
-                return new MicrometerCircuitBreakerMetrics(mr, circuitBreakerRegistry);
+                return new MicrometerCircuitBreakerMetrics(mr, circuitBreakerRegistry, props.getMetrics().isIncludeMapperId());
             }
             return new NoOpCircuitBreakerMetrics();
         }

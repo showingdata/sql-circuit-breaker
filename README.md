@@ -10,7 +10,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>2.0.1</version>
+    <version>2.1.0</version>
 </dependency>
 ```
 
@@ -342,6 +342,25 @@ SDK 自动注册以下 5 项指标：
 
 > 所有 5 项指标均在启动时完成预注册，`/actuator/metrics` 首次访问即可见全部指标名称，无需等待 SQL 执行或熔断事件发生。其中 `timeout` / `open` / `fast.fail` 预注册时以空字符串作为 `mapper_id` 占位，运行期动态注册的真实 Mapper 条目与之独立共存。
 
+#### 高基数场景：关闭 mapper_id 标签
+
+`timeout` / `open` / `fast.fail` 三项指标默认带 `mapper_id` 标签，**单服务的时间序列数 ≈ Mapper 方法数 × 4 × 3**。大型系统（数百 Mapper × 多副本 × 多服务）下 Prometheus 时间序列容易膨胀（同时也增加 VictoriaMetrics / Mimir 等按 series 计费后端的成本）。
+
+可通过配置关闭 `mapper_id` 标签，三项指标退化为仅按 `sql_type` 聚合，时间序列数从 N × 12 收敛到固定 12：
+
+```yaml
+sql-circuit-breaker:
+  metrics:
+    include-mapper-id: false   # 默认 true；规模大或对 series 基数敏感时关掉
+```
+
+关闭后定位具体 Mapper 改用日志中的 mapper 字段，例如：
+```
+[SqlCircuitBreaker] 熔断开启 | key=default:SELECT:a3f2c1... | mapper=com.example.mapper.OrderMapper.queryByUserId | ...
+```
+
+`intercept.total`（无 mapper_id）和 `open.count`（Gauge 无标签）不受此开关影响。
+
 #### 访问端点
 
 通过 `/actuator/metrics` 查看指标：
@@ -435,7 +454,7 @@ SDK 通过 `@ConditionalOnMissingBean` 检测，存在自定义实现时自动�
 
 ## 6. 注意事项
 
-1. **ThreadLocal 必须 clear**：在 finally 块中调用 `SqlCircuitBreakerContext.clear()`，否则在线程池复用场景下会污染下一次请求。拦截器的 finally 块会兜底清理一次，但业务代码自己也应在 finally 中显式清理。
+1. **ThreadLocal 必须由调用方 clear**：在 finally 块中调用 `SqlCircuitBreakerContext.clear()`，否则在线程池复用场景下会污染下一次请求。拦截器**不再做兜底清理**——这样设计是为了让 Service 层 set 一次 ThreadLocal 后，能对其调用的多条 Mapper SQL 统一生效（若拦截器在第一条 SQL 执行后清理，从第二条 SQL 起 ThreadLocal 就会失效）。拦截器在入口对 ThreadLocal 做一次快照，整次 intercept 调用使用同一份快照，不受调用方在执行过程中变更 ThreadLocal 的影响。
 
 2. **disableCircuitBreaker 的使用场景**：当某个操作明知 SQL 会慢（如定时任务数据修复、人工补偿脚本），但又不希望触发熔断影响正常业务时，可通过 ThreadLocal 临时关闭熔断，作用范围仅限当前线程本次调用：
 
