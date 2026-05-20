@@ -12,12 +12,14 @@
 
     <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
     <name>sql-circuit-breaker-spring-boot3-starter</name>
+    <version>2.1.1</version>
 
     <dependencies>
 
         <dependency>
             <groupId>io.github.showingdata.starter.framework</groupId>
             <artifactId>sql-circuit-breaker-core</artifactId>
+            <version>2.1.1</version>
         </dependency>
 
         <dependency>
