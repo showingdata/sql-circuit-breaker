@@ -7,19 +7,19 @@
     <parent>
         <groupId>io.github.showingdata.starter.framework</groupId>
         <artifactId>sql-circuit-breaker-parent</artifactId>
-        <version>2.1.0</version>
+        <version>2.1.2</version>
     </parent>
 
     <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
     <name>sql-circuit-breaker-spring-boot3-starter</name>
-    <version>2.1.1</version>
+    <version>2.1.2</version>
 
     <dependencies>
 
         <dependency>
             <groupId>io.github.showingdata.starter.framework</groupId>
             <artifactId>sql-circuit-breaker-core</artifactId>
-            <version>2.1.1</version>
+            <version>2.1.2</version>
         </dependency>
 
         <dependency>
@@ -56,8 +56,6 @@
             <artifactId>guava</artifactId>
         </dependency>
 
-        <!-- Micrometer：可选依赖，业务方引入 spring-boot-actuator 时自动生效。
-         SDK 内部通过 @ConditionalOnClass + NoOp 降级，不强制要求业务方引入。-->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
