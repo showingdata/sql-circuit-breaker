@@ -21,7 +21,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>2.1.3</version>
+    <version>2.1.4</version>
 </dependency>
 ```
 
@@ -31,7 +31,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
-    <version>2.1.3</version>
+    <version>2.1.4</version>
 </dependency>
 ```
 
@@ -306,21 +306,25 @@ public class MyMessageCenterClient implements MessageCenterClient {
 
 熔断 Key 中包含数据源标识，用于多数据源场景下隔离各数据源的熔断状态。默认实现 `DefaultDataSourceKeyResolver` 基于 MyBatis `Environment ID`。
 
-若使用 `dynamic-datasource-spring-boot-starter` 等运行时切换框架（所有数据源共用一个 `SqlSessionFactory`，无法通过 Environment ID 区分），可实现 `DataSourceKeyResolver` 接口并注册为 Spring Bean 覆盖默认行为：
+> ⚠️ **dynamic-datasource 必看**：`dynamic-datasource-spring-boot-starter` 这类运行时切换框架，所有物理库**共用同一个 `SqlSessionFactory` / Environment**，路由发生在连接层、MyBatis 无感知。因此默认实现对所有库返回**同一个** dsKey，**熔断状态无法按物理库隔离**——例如 `@DS("slave")` 触发熔断后，会把 `@DS("master")` 上同指纹的 SQL 一起 fast-fail。要按物理库隔离，必须自定义 `DataSourceKeyResolver` 读取框架的当前数据源 ThreadLocal：
 
 ```java
-@Component
+import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
+
+@Component   // 声明为 Bean 即通过 @ConditionalOnMissingBean 覆盖默认实现
 public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
     @Override
     public String resolve(MappedStatement ms) {
-        // dynamic-datasource 通过 ThreadLocal 记录当前数据源 key
+        // 拦截器在 @DS 切换后的 mapper 调用栈内执行，peek() 能拿到当前线程选中的库
         String dsKey = DynamicDataSourceContextHolder.peek();
-        return dsKey != null ? dsKey : "master";
+        return dsKey != null ? dsKey : "master";   // 未标 @DS 时兜底为主库
     }
 }
 ```
 
 其他框架同理，只需在 `resolve()` 中返回能唯一标识当前数据源的字符串即可。若项目只有单数据源，无需任何配置，默认返回 `"default"`，不受影响。
+
+> 注：**启动期注解校验不受 dynamic-datasource 影响**——`@SqlCircuitBreaker` 注解与物理库无关，单 `SqlSessionFactory` 下所有 Mapper 注解都会被启动期扫描覆盖。dsKey 只影响运行期的熔断状态隔离，不影响校验。
 
 ### 4.6 Metrics 指标（Micrometer）
 

@@ -50,18 +50,7 @@ public class ConfigResolver {
      */
     public ResolvedConfig resolve(MappedStatement ms, SqlCommandType sqlType, SqlCircuitBreakerConfig tl) {
         // 注解首次解析时一并校验，结果缓存后后续请求直接命中缓存，无需重复校验。
-        // validateAnnotation 抛 IllegalArgumentException（unchecked），可在 lambda 内直接抛出。
-        AnnotationPair pair = annotationCache.computeIfAbsent(ms.getId(), k -> {
-            SqlCircuitBreaker methodAnn = resolveMethodAnnotation(ms);
-            SqlCircuitBreaker ifaceAnn = resolveInterfaceAnnotation(ms);
-            if (methodAnn != null) {
-                validateAnnotation(methodAnn, "方法级", k);
-            }
-            if (ifaceAnn != null) {
-                validateAnnotation(ifaceAnn, "接口级", k);
-            }
-            return new AnnotationPair(methodAnn, ifaceAnn);
-        });
+        AnnotationPair pair = annotationCache.computeIfAbsent(ms.getId(), k -> loadAndValidate(ms, k));
 
         return ResolvedConfig.builder()
                 .timeout(mergeTimeout(sqlType, tl, pair.method, pair.iface))
@@ -72,21 +61,47 @@ public class ConfigResolver {
     }
 
     /**
-     * 注解值域合理性校验：
-     * - timeoutMs：-1 表示继承，0 无意义（任何 SQL 都超时），其余正数合法
-     * - circuitOpenMs：-1 表示继承，0 会导致熔断后立即重置失去保护，其余正数合法
-     * - failureThreshold：-1 表示继承，0 会导致永远无法触发熔断，其余正数合法
+     * 启动期预校验入口：解析并校验该 MappedStatement 上的注解，结果写入缓存。
+     * 与运行期 {@link #resolve} 共用 {@link #loadAndValidate}（单一事实源），同时预热 annotationCache，
+     * 让首次真实请求省去一次反射。注解非法时抛 {@link IllegalArgumentException}（unchecked），
+     * 由启动期扫描触发 fail-fast。已校验过的 id 命中缓存直接跳过，幂等可重复调用。
+     */
+    public void prevalidate(MappedStatement ms) {
+        annotationCache.computeIfAbsent(ms.getId(), k -> loadAndValidate(ms, k));
+    }
+
+    /**
+     * 解析方法/接口注解并做值域校验，构造缓存条目。运行期 resolve 与启动期 prevalidate 共用。
+     * validateAnnotation 抛 IllegalArgumentException（unchecked），可在 computeIfAbsent 的 lambda 内直接抛出。
+     */
+    private AnnotationPair loadAndValidate(MappedStatement ms, String id) {
+        SqlCircuitBreaker methodAnn = resolveMethodAnnotation(ms);
+        SqlCircuitBreaker ifaceAnn = resolveInterfaceAnnotation(ms);
+        if (methodAnn != null) {
+            validateAnnotation(methodAnn, "方法级", id);
+        }
+        if (ifaceAnn != null) {
+            validateAnnotation(ifaceAnn, "接口级", id);
+        }
+        return new AnnotationPair(methodAnn, ifaceAnn);
+    }
+
+    /**
+     * 注解值域合理性校验：三个数值字段仅允许 -1（继承上层）或正数，其余一律非法并 fail-fast。
+     * - 0：timeoutMs 会让所有 SQL 立即超时；circuitOpenMs 熔断后立即重置失去保护；failureThreshold 永远无法触发熔断
+     * - 非 -1 的负数（如 -8）：merge 逻辑（{@code >= 0} 判定）会把它静默当作"继承"，
+     *   写注解的人以为生效了其实没生效，属隐性误配，必须拦下
      */
     private void validateAnnotation(SqlCircuitBreaker ann, String level, String mapperId) {
         List<String> errors = new ArrayList<>();
-        if (ann.timeoutMs() == 0) {
-            errors.add("timeoutMs 不能为 0，会导致所有 SQL 立即超时");
+        if (ann.timeoutMs() != -1 && ann.timeoutMs() <= 0) {
+            errors.add("timeoutMs 仅允许 -1(继承) 或正数，当前值=" + ann.timeoutMs());
         }
-        if (ann.circuitOpenMs() == 0) {
-            errors.add("circuitOpenMs 不能为 0，会导致熔断后立即重置，保护失效");
+        if (ann.circuitOpenMs() != -1 && ann.circuitOpenMs() <= 0) {
+            errors.add("circuitOpenMs 仅允许 -1(继承) 或正数，当前值=" + ann.circuitOpenMs());
         }
-        if (ann.failureThreshold() == 0) {
-            errors.add("failureThreshold 不能为 0，永远无法触发熔断");
+        if (ann.failureThreshold() != -1 && ann.failureThreshold() <= 0) {
+            errors.add("failureThreshold 仅允许 -1(继承) 或正数，当前值=" + ann.failureThreshold());
         }
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException(
