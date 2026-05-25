@@ -15,7 +15,7 @@
 
 ### 1. 引入依赖
 
-**Spring Boot 2.x： 稳定版**
+**Spring Boot 2.x:**
 
 ```xml
 <dependency>
@@ -25,7 +25,7 @@
 </dependency>
 ```
 
-**Spring Boot 3.x：稳定版**
+**Spring Boot 3.x:**
 
 ```xml
 <dependency>
