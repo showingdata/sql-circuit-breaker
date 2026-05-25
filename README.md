@@ -15,23 +15,23 @@
 
 ### 1. 引入依赖
 
-**Spring Boot 2.x：**
+**Spring Boot 2.x： 稳定版**
 
 ```xml
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>2.1.1</version>
+    <version>2.1.3</version>
 </dependency>
 ```
 
-**Spring Boot 3.x：**
+**Spring Boot 3.x：稳定版**
 
 ```xml
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
-    <version>2.1.1</version>
+    <version>2.1.3</version>
 </dependency>
 ```
 
