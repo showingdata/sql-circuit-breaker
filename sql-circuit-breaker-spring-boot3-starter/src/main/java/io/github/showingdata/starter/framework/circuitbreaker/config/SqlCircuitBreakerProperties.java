@@ -18,27 +18,19 @@ import java.util.List;
  *     timeout-ms: 3000
  *     failure-threshold: 3
  *     circuit-open-ms: 60000
- *     cache-max-size: 10000
- *     cache-expire-after-access-minutes: 30
- *   insert:
+ *     cache-max-size: 10000 *   insert:
  *     timeout-ms: 5000
  *     failure-threshold: 1
  *     circuit-open-ms: 30000
- *     cache-max-size: 5000
- *     cache-expire-after-access-minutes: 30
- *   update:
+ *     cache-max-size: 5000 *   update:
  *     timeout-ms: 5000
  *     failure-threshold: 1
  *     circuit-open-ms: 30000
- *     cache-max-size: 5000
- *     cache-expire-after-access-minutes: 30
- *   delete:
+ *     cache-max-size: 5000 *   delete:
  *     timeout-ms: 3000
  *     failure-threshold: 1
  *     circuit-open-ms: 30000
- *     cache-max-size: 5000
- *     cache-expire-after-access-minutes: 30
- * </pre>
+ *     cache-max-size: 5000 * </pre>
  *
  * @author chenjiang
  */
@@ -101,9 +93,6 @@ public class SqlCircuitBreakerProperties {
         if (config.getCacheMaxSize() == null || config.getCacheMaxSize() < 1) {
             errors.add(prefix + ".cache-max-size 必须 >= 1，当前值：" + config.getCacheMaxSize());
         }
-        if (config.getCacheExpireAfterAccessMinutes() == null || config.getCacheExpireAfterAccessMinutes() < 1) {
-            errors.add(prefix + ".cache-expire-after-access-minutes 必须 >= 1，当前值：" + config.getCacheExpireAfterAccessMinutes());
-        }
         if (!errors.isEmpty()) {
             throw new IllegalStateException(
                     "[SqlCircuitBreaker] 配置不合法：\n  - " + String.join("\n  - ", errors));
@@ -156,10 +145,5 @@ public class SqlCircuitBreakerProperties {
          * 该 SQL 类型熔断状态的 Guava Cache 最大条目数，超出时按 LRU 驱逐。
          */
         private Long cacheMaxSize;
-
-        /**
-         * 缓存条目无访问后的驱逐时间（分钟），防止长期不用的 SQL 驻留内存。
-         */
-        private Long cacheExpireAfterAccessMinutes;
     }
 }

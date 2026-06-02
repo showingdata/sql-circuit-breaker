@@ -4,13 +4,34 @@
 
 ## 快速接入
 
+> **版本对应关系（请按 Spring Boot 版本选择对应 artifactId / 分支）**
+>
+> | Spring Boot | JDK | artifactId | 分支 |
+> |---|---|---|---|
+> | 2.x | 8+ | `sql-circuit-breaker-spring-boot-starter` | `master` |
+> | 3.x | 17+ | `sql-circuit-breaker-spring-boot3-starter` | `springboot3` |
+>
+> 两个 starter 共用同一份 `sql-circuit-breaker-core`，核心熔断逻辑完全一致，仅自动装配机制和依赖坐标按 Spring Boot 版本适配。
+
 ### 1. 引入依赖
+
+**Spring Boot 2.x:**
 
 ```xml
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>2.1.0</version>
+    <version>2.1.3</version>
+</dependency>
+```
+
+**Spring Boot 3.x:**
+
+```xml
+<dependency>
+    <groupId>io.github.showingdata.starter.framework</groupId>
+    <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
+    <version>2.1.3</version>
 </dependency>
 ```
 
@@ -24,25 +45,21 @@ sql-circuit-breaker:
     failure-threshold: 3                 # 连续超时几次触发熔断
     circuit-open-ms: 60000               # 熔断持续时长（毫秒）
     cache-max-size: 10000                # 熔断状态缓存最大条目数
-    cache-expire-after-access-minutes: 30  # 缓存条目无访问后驱逐时间（分钟）
   insert:
     timeout-ms: 5000
     failure-threshold: 1
     circuit-open-ms: 30000
     cache-max-size: 5000
-    cache-expire-after-access-minutes: 30
   update:
     timeout-ms: 5000
     failure-threshold: 1
     circuit-open-ms: 30000
     cache-max-size: 5000
-    cache-expire-after-access-minutes: 30
   delete:
     timeout-ms: 5000
     failure-threshold: 1
     circuit-open-ms: 30000
     cache-max-size: 5000
-    cache-expire-after-access-minutes: 30
 ```
 
 四种 SQL 类型（SELECT / INSERT / UPDATE / DELETE）均为必填，缺少任意一块启动时会报错提示。
@@ -174,14 +191,14 @@ updateCache:  circuitKey → CircuitBreakerState
 deleteCache:  circuitKey → CircuitBreakerState
 ```
 
-**双重驱逐策略**，两个参数在 application.yml 中按 SQL 类型独立配置：
+**双重驱逐策略**：
 
-| 配置项 | 驱逐策略 | 作用 |
+| 驱逐策略 | 配置来源 | 作用 |
 |---|---|---|
-| `cache-max-size` | LRU 容量上限 | 防止无限增长占满内存，超出后驱逐最久未访问的条目 |
-| `cache-expire-after-access-minutes` | 访问过期 | 某条 SQL 长期未被访问时自动移出，防止长期不活跃的 SQL 驻留内存 |
+| LRU 容量上限 | `cache-max-size`（按 SQL 类型独立配置） | 内存硬上界，防止无限增长占满内存，超出后驱逐最久未访问的条目 |
+| 访问过期（expireAfterAccess） | 由 `circuit-open-ms` 推导：取 20 倍且不低于 5 分钟，**不单独配置** | 某条 SQL 长期未被访问时自动移出，防止长期不活跃的 SQL 驻留内存 |
 
-**两个参数需配合使用**：容量上限应对突发场景（短时间内大量不同 SQL 进入），访问过期应对长期场景（业务低谷期 SQL 变少后及时收缩内存占用）。
+**为什么访问过期不开放配置**：它必须显著大于熔断窗口（`circuit-open-ms`），否则空闲期处于 OPEN 的熔断器会被缓存提前驱逐、削弱保护。直接由 `circuit-open-ms` 推导可从根上杜绝这类误配；内存硬上界仍由 `cache-max-size` 保证，访问过期只承担空闲清理与 `open.count` Gauge 的自愈。
 
 **各类型独立配置的意义**：SELECT 场景通常 SQL 种类多（各种查询条件组合），`cache-max-size` 建议设大（如 10000）；DML 场景 SQL 种类相对少，可设小（如 5000）节省内存。
 
@@ -197,25 +214,21 @@ sql-circuit-breaker:
     failure-threshold: 3                   # 连续超时几次触发熔断，SELECT 建议 3
     circuit-open-ms: 60000                 # 熔断持续时长（毫秒），建议 60s
     cache-max-size: 10000                  # 熔断状态缓存最大条目数（LRU 驱逐）
-    cache-expire-after-access-minutes: 30  # 缓存无访问驱逐时间（分钟）
   insert:
     timeout-ms: 5000                       # DML 建议 5s
     failure-threshold: 1                   # DML 持锁影响大，建议 1 次即熔断
     circuit-open-ms: 30000
     cache-max-size: 5000
-    cache-expire-after-access-minutes: 30
   update:
     timeout-ms: 5000
     failure-threshold: 1
     circuit-open-ms: 30000
     cache-max-size: 5000
-    cache-expire-after-access-minutes: 30
   delete:
     timeout-ms: 5000
     failure-threshold: 1
     circuit-open-ms: 30000
     cache-max-size: 5000
-    cache-expire-after-access-minutes: 30
 ```
 
 ### 4.2 注解配置
@@ -614,7 +627,6 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
     | `circuit-open-ms` | `> 0` |
     | `failure-threshold` | `>= 1` |
     | `cache-max-size` | `>= 1` |
-    | `cache-expire-after-access-minutes` | `>= 1` |
 
     全局配置在启动时校验（缺少任意 SQL 类型块或字段非法均会快速失败）；注解在首次 SQL 执行时校验；ThreadLocal 在调用 `set()` 时立即校验。
 

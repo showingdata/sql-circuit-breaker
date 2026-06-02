@@ -15,8 +15,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author chenjiang
  * 熔断状态注册中心，按 SQL 类型维护四个独立 Guava Cache。
  * <p>
- * Guava Cache 内置 LRU 驱逐（maximumSize）和访问过期（expireAfterAccess），
- * 无需手动定时清理任务。各类型缓存容量和过期时间均独立配置。
+ * Guava Cache 内置 LRU 驱逐（maximumSize）和访问过期（expireAfterAccess），无需手动定时清理任务。
+ * maximumSize 按类型独立配置；expireAfterAccess 不再单独配置，由 circuit-open-ms 推导
+ * （取 20 倍且不低于 5 分钟），保证过期窗口始终显著大于熔断窗口，避免空闲期 OPEN 状态被驱逐冲掉。
  * 状态存储在 JVM 内存中，多实例部署时各实例独立计数（per-instance 语义）。
  * </p>
  * <p>
@@ -30,6 +31,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * </p>
  */
 public class CircuitBreakerRegistry {
+
+    /** expireAfterAccess 相对 circuit-open-ms 的倍数：远大于熔断窗口，吸收注解临时调大 open 的情况 */
+    private static final int EXPIRE_MULTIPLIER = 20;
+    /** expireAfterAccess 地板值（毫秒）：防止 circuit-open-ms 设得过小导致空闲清理窗口过短 */
+    private static final long EXPIRE_FLOOR_MS = 5 * 60_000L;
 
     /**
      * 当前处于 OPEN 状态的熔断器数量，所有 CircuitBreakerState 实例共享此引用。
@@ -57,9 +63,13 @@ public class CircuitBreakerRegistry {
                 evicted.onEvicted();
             }
         };
+        // expireAfterAccess 不单独配置：由 circuit-open-ms 推导，取其 EXPIRE_MULTIPLIER 倍且不低于 EXPIRE_FLOOR_MS。
+        // expire 必须显著大于熔断窗口，否则空闲期 OPEN 状态会被缓存驱逐冲掉、削弱保护；
+        // 内存硬上界仍由 maximumSize(LRU) 保证，这里只承担空闲清理 + openCount Gauge 的自愈。
+        long expireMs = Math.max(config.getCircuitOpenMs() * EXPIRE_MULTIPLIER, EXPIRE_FLOOR_MS);
         return CacheBuilder.newBuilder()
                 .maximumSize(config.getCacheMaxSize())
-                .expireAfterAccess(config.getCacheExpireAfterAccessMinutes(), TimeUnit.MINUTES)
+                .expireAfterAccess(expireMs, TimeUnit.MILLISECONDS)
                 .removalListener(listener)
                 .build();
     }
