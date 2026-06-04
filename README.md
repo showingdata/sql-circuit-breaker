@@ -6,6 +6,9 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![JDK](https://img.shields.io/badge/JDK-8%2B-brightgreen)](https://adoptium.net/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-2.x%20%7C%203.x-brightgreen)](https://spring.io/projects/spring-boot)
+[![GitHub Stars](https://img.shields.io/github/stars/showingdata/sql-circuit-breaker?style=social)](https://github.com/showingdata/sql-circuit-breaker)
+[![GitHub last commit](https://img.shields.io/github/last-commit/showingdata/sql-circuit-breaker)](https://github.com/showingdata/sql-circuit-breaker)
+[![MyBatis](https://img.shields.io/badge/ORM-MyBatis%20%7C%20MyBatis--Plus-orange)](https://mybatis.org/)
 
 ## 快速接入
 
