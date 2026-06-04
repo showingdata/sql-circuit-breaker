@@ -2,6 +2,11 @@
 
 > 基于 MyBatis / MyBatis-Plus Interceptor 的 SQL 超时熔断 SDK
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.showingdata.starter.framework/sql-circuit-breaker-spring-boot-starter?color=blue)](https://central.sonatype.com/artifact/io.github.showingdata.starter.framework/sql-circuit-breaker-spring-boot-starter)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![JDK](https://img.shields.io/badge/JDK-8%2B-brightgreen)](https://adoptium.net/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-2.x%20%7C%203.x-brightgreen)](https://spring.io/projects/spring-boot)
+
 ## 快速接入
 
 > **版本对应关系（请按 Spring Boot 版本选择对应 artifactId / 分支）**
