@@ -123,22 +123,26 @@ public class CircuitBreakerState {
     }
 
     /**
-     * SQL 执行超时时调用。返回 true 表示本次调用触发了熔断或刷新了 OPEN 窗口。
-     * 仅在 CLOSED → OPEN 的真实转换时增加 openCount，避免并发场景下 OPEN → OPEN 的窗口刷新
-     * 被重复计数（场景：T1 isOpen()=false 后正要执行 SQL，T2 onTimeout 已转 OPEN；
-     * T1 SQL 慢，回头也调 onTimeout 时 state 已是 OPEN，此时不应再 +1）。
+     * SQL 执行超时时调用。
+     * <p>已处于 OPEN 时<b>直接短路返回 false</b>：熔断打开那一刻已在执行的在途请求，其迟到超时不再累加计数、
+     * 不刷新窗口，保证 OPEN 窗口严格等于 circuitOpenMs（与 ES / Redis 熔断器语义一致、便于推理）。
+     * 这同时天然杜绝了 OPEN → OPEN 重复 openCount 计数（场景：T1 isOpen()=false 后正要执行 SQL，
+     * T2 onTimeout 已转 OPEN；T1 SQL 慢回头也调 onTimeout 时 state 已是 OPEN，此处直接短路、不再 +1）。
+     * <p>CLOSED 下累加连续超时；达到 failureThreshold 触发 CLOSED → OPEN 转换、{@code openCount++} 并返回 true
+     * （调用方据此只发一次 CIRCUIT_OPEN 告警）；未达阈值返回 false。
      */
     public synchronized boolean onTimeout(int failureThreshold, long circuitOpenMs) {
+        if (state == State.OPEN) {
+            return false;
+        }
         consecutiveFail++;
         if (consecutiveFail >= failureThreshold) {
-            boolean wasClosed = (state == State.CLOSED);
+            // 短路保证：执行到此 state 必为 CLOSED，故必是真实转换，直接计数
             state = State.OPEN;
             openTimestamp = System.currentTimeMillis();
             this.circuitOpenMs = circuitOpenMs;
             consecutiveFail = 0;
-            if (wasClosed) {
-                openCount.incrementAndGet();
-            }
+            openCount.incrementAndGet();
             return true;
         }
         return false;

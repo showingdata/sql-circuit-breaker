@@ -1,6 +1,6 @@
 # 基于分布式微服务架构中的熔断器思想  设计一款 SQL熔断器 springboot-stater
 
-> 基于 MyBatis / MyBatis-Plus Interceptor 的 SQL 超时熔断 SDK
+> 基于 MyBatis / MyBatis-Plus Interceptor 的慢 SQL 观测与后续快速失败 SDK
 
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.showingdata.starter.framework/sql-circuit-breaker-spring-boot-starter?color=blue)](https://central.sonatype.com/artifact/io.github.showingdata.starter.framework/sql-circuit-breaker-spring-boot-starter)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
@@ -74,6 +74,8 @@ sql-circuit-breaker:
 
 接入完成，重启即生效，无需修改任何业务代码。
 
+> **边界说明**：SDK 在 MyBatis 拦截器层统计 SQL 实际执行耗时。某次 SQL 执行完成后，如果耗时超过 `timeout-ms`，才会计入熔断失败次数；达到阈值后，后续相同 SQL 指纹会在本地快速失败，不再发送到 DB。SDK 不会中断或取消已经发送到数据库、正在执行中的 JDBC SQL；如需强制取消执行中的 SQL，请配合数据库驱动、连接池或 MyBatis/JDBC 查询超时能力使用。
+
 ## 1. 背景与目标
 
 ### 1.1 问题
@@ -90,8 +92,8 @@ sql-circuit-breaker:
 
 | 能力 | 说明 |
 |---|---|
-| 超时检测 | 按 SQL 类型（SELECT/INSERT/UPDATE/DELETE）独立配置超时阈值 |
-| 自动熔断 | 超时后自动进入熔断状态，熔断期间相同 SQL 本地快速失败，不发送到 DB |
+| 慢 SQL 检测 | 按 SQL 类型（SELECT/INSERT/UPDATE/DELETE）独立配置耗时阈值，SQL 执行完成后根据实际耗时判断是否超阈值 |
+| 自动熔断 | 连续超阈值后自动进入熔断状态，熔断期间相同 SQL 指纹本地快速失败，不发送到 DB |
 | 多级配置 | 全局配置 → Mapper 接口注解 → Mapper 方法注解 → ThreadLocal 编程式覆盖 |
 | 快速失败 | 熔断期间抛出指定业务异常，记录结构化错误日志 |
 | 消息通知 | 实现 `MessageCenterClient` 接口即可接入自有通知渠道，默认空操作 |
@@ -616,18 +618,20 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
 
 6. **熔断粒度**：当前粒度是 `数据源ID:SQL类型:SQL指纹`。若需要更细粒度（如按 mapperId + SQL），可在 circuitKey 中加入 `ms.getId()`。
 
-7. **不对异常熔断**：只对超时熔断，SQL 执行抛出的其他异常（如连接异常、语法错误）不纳入熔断计数，避免误判。
+7. **不取消正在执行中的 SQL**：`timeout-ms` 是 SDK 在 MyBatis 拦截器层的耗时判定阈值，不是 JDBC 查询取消时间。一次 SQL 已经发送到 DB 后，SDK 会等待 `invocation.proceed()` 返回或抛出异常，再根据耗时决定是否计入熔断；它不会主动中断数据库侧正在执行的语句。熔断生效后，后续相同 SQL 指纹会在本地快速失败，从而避免继续向 DB 发送同类 SQL。
 
-8. **消息通知只发一次**：消息通知仅在熔断首次打开时触发，快速失败路径不发消息，避免高并发下消息风暴。
+8. **不对异常熔断**：只对执行完成后的超阈值耗时计入熔断，SQL 执行抛出的其他异常（如连接异常、语法错误）不纳入熔断计数，避免误判。若业务希望把驱动超时、Socket 超时等特定异常也纳入熔断，可在业务侧结合驱动/连接池超时配置和异常处理策略扩展。
 
-9. **`SELECT ... FOR UPDATE` 误判风险**：MyBatis 根据 XML 标签确定 SQL 类型，`SELECT ... FOR UPDATE` 会被识别为 SELECT，走宽松阈值。建议对此类方法单独加注解收紧阈值：
+9. **消息通知只发一次**：消息通知仅在熔断首次打开时触发，快速失败路径不发消息，避免高并发下消息风暴。
+
+10. **`SELECT ... FOR UPDATE` 误判风险**：MyBatis 根据 XML 标签确定 SQL 类型，`SELECT ... FOR UPDATE` 会被识别为 SELECT，走宽松阈值。建议对此类方法单独加注解收紧阈值：
 
    ```java
    @SqlCircuitBreaker(timeoutMs = 3000, failureThreshold = 1)
    List<Order> selectForUpdate(Long userId);
    ```
 
-10. **配置校验规则**：
+11. **配置校验规则**：
 
     | 配置项 | 合法值 |
     |---|---|
@@ -638,9 +642,9 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
 
     全局配置在启动时校验（缺少任意 SQL 类型块或字段非法均会快速失败）；注解在首次 SQL 执行时校验；ThreadLocal 在调用 `set()` 时立即校验。
 
-11. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
+12. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
 
-12. **多数据源场景的熔断隔离**：熔断 Key 包含数据源标识，保证不同数据源的熔断状态互不干扰。根据项目使用的多数据源框架选择适配方式：
+13. **多数据源场景的熔断隔离**：熔断 Key 包含数据源标识，保证不同数据源的熔断状态互不干扰。根据项目使用的多数据源框架选择适配方式：
 
     **方式一（推荐）：实现 `DataSourceKeyResolver` 接口**
 

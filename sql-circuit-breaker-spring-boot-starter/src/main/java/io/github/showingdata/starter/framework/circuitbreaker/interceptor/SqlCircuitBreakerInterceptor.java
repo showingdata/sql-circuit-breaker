@@ -55,14 +55,17 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
     /**
      * 消息发送用独立守护线程，避免消息中心抖动阻塞 SQL 业务线程。
      * 单线程而非线程池：CIRCUIT_OPEN 为极低频事件，单线程绰绰有余，同时保证消息有序。
-     * static 而非实例字段：拦截器是 Spring 单例，static 明确表达整个 JVM 只需一个发送线程的意图。
+     * <b>实例字段而非 static</b>：每个拦截器（即每个 Spring Context）持有自己的发送线程，{@link #destroy()}
+     * 只关自己的——避免多 Context 共享一个 static 线程池时，某个 Context 关闭（或 /refresh、@RefreshScope、
+     * 测试上下文销毁）把别的 Context 的线程池一并 shutdown、导致其后续告警全部静默丢弃（ExecutorService 一旦
+     * shutdown 不可复活）。单 Context 部署仍只有一条线程，无额外成本。
      * 守护线程：Spring 容器关闭时由 destroy() 触发优雅关闭，等待最多 3s 让队列中的消息发完；
      * 超时则强制中断，极端情况下未发完的消息会丢弃，这对告警通知是可接受的代价。
      * <p>
      * 使用有界队列（容量 1000），防止消息中心长时间不可用时内存无限增长导致 OOM。
      * 队列满时直接丢弃事件并记录 WARN 日志，不阻塞业务线程。
      */
-    private static final ExecutorService MSG_EXECUTOR = new ThreadPoolExecutor(
+    private final ExecutorService msgExecutor = new ThreadPoolExecutor(
             1, 1,
             0L, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(1000),
@@ -260,7 +263,7 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
 
     private void sendMessage(CircuitBreakerEvent event) {
         try {
-            MSG_EXECUTOR.execute(() -> {
+            msgExecutor.execute(() -> {
                 try {
                     messageCenterClient.send(event);
                 } catch (Exception e) {
@@ -294,14 +297,14 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
 
     @Override
     public void destroy() {
-        MSG_EXECUTOR.shutdown();
+        msgExecutor.shutdown();
         try {
-            if (!MSG_EXECUTOR.awaitTermination(3, TimeUnit.SECONDS)) {
-                MSG_EXECUTOR.shutdownNow();
+            if (!msgExecutor.awaitTermination(3, TimeUnit.SECONDS)) {
+                msgExecutor.shutdownNow();
                 log.warn("[SqlCircuitBreaker] 消息线程未在 3s 内终止，已强制关闭");
             }
         } catch (InterruptedException e) {
-            MSG_EXECUTOR.shutdownNow();
+            msgExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
     }
