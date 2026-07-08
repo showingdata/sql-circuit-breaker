@@ -6,7 +6,7 @@
 
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-parent</artifactId>
-    <version>2.1.6</version>
+    <version>2.2.0</version>
     <packaging>pom</packaging>
     <name>sql-circuit-breaker-parent</name>
     <description>基于 MyBatis / MyBatis-Plus 拦截器的 SQL 超时熔断 Spring Boot Starter</description>
@@ -142,7 +142,7 @@
             <plugin>
                 <groupId>org.sonatype.central</groupId>
                 <artifactId>central-publishing-maven-plugin</artifactId>
-                <version>0.6.0</version>
+                <version>0.11.0</version>
                 <extensions>true</extensions>
                 <configuration>
                     <publishingServerId>central</publishingServerId>
