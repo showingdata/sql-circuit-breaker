@@ -39,7 +39,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
-    <version>2.1.5</version>
+    <version>2.2.0</version>
 </dependency>
 ```
 
