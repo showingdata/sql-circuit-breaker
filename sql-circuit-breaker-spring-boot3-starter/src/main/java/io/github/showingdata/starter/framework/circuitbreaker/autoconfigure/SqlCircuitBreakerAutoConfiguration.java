@@ -15,6 +15,8 @@ import io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuit
 import io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -52,6 +54,7 @@ import org.springframework.context.annotation.Configuration;
 @EnableConfigurationProperties(SqlCircuitBreakerProperties.class)
 @ConditionalOnClass(name = "org.apache.ibatis.plugin.Interceptor")
 @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "enabled", havingValue = "true", matchIfMissing = false)
+@AutoConfigureAfter(name = "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration")
 public class SqlCircuitBreakerAutoConfiguration {
 
     @Value("${spring.application.name:unknown}")
@@ -61,6 +64,33 @@ public class SqlCircuitBreakerAutoConfiguration {
     @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "banner-enabled", havingValue = "true", matchIfMissing = true)
     public ApplicationListener<ApplicationReadyEvent> sqlCircuitBreakerBannerPrinter() {
         return event -> SqlCircuitBreakerBanner.print(System.out);
+    }
+
+    /**
+     * 拦截器兜底注入器。
+     * <p>
+     * <b>为什么需要这个 Bean：</b>
+     * <br>
+     * 正常情况下，MyBatis/MyBatis-Plus 会自动扫描 Spring 容器中所有 {@link org.apache.ibatis.plugin.Interceptor}
+     * 类型的 Bean，并注册到 {@code SqlSessionFactory} 的拦截器链中。但在以下场景中，自动扫描可能失效：
+     * <ul>
+     *   <li>业务方手动构建 {@code SqlSessionFactory}，绕过了 MyBatis Boot 的自动配置</li>
+     *   <li>使用多数据源框架（如 dynamic-datasource）时，部分数据源的拦截器未被正确收集</li>
+     *   <li>自定义 MyBatis 配置类覆盖了默认的拦截器注册逻辑</li>
+     * </ul>
+     * <p>
+     * 此 {@link BeanPostProcessor} 作为安全网，在所有 {@code SqlSessionFactory} 初始化后检查拦截器链，
+     * 如果发现 {@link SqlCircuitBreakerInterceptor} 未注册，则强制注入，确保熔断器在所有场景下都能生效。
+     * <p>
+     * 实际案例：某业务系统使用 MyBatis-Plus + 自定义多数据源配置，自动扫描失效导致熔断器不生效，
+     * 通过此兜底机制成功注入。
+     * <p>
+     * 通过 {@code sql-circuit-breaker.auto-inject=false} 可关闭此兜底机制（默认开启）。
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "auto-inject", havingValue = "true", matchIfMissing = true)
+    public static BeanPostProcessor sqlCircuitBreakerInterceptorInjector(ObjectProvider<SqlCircuitBreakerInterceptor> interceptorProvider) {
+        return new SqlCircuitBreakerInterceptorInjector(interceptorProvider);
     }
 
     @Bean
