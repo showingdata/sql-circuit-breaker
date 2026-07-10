@@ -29,7 +29,7 @@
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>2.2.0</version>
+    <version>2.2.1</version>
 </dependency>
 ```
 
@@ -268,7 +268,32 @@ public interface OrderMapper extends BaseMapper<Order> {
 }
 ```
 
-### 4.3 ThreadLocal 编程式
+### 4.3 启动期注解校验
+
+默认情况下，`@SqlCircuitBreaker` 注解会在对应 Mapper 首次执行 SQL 时做值域校验，并将解析结果写入缓存。若希望在应用启动阶段提前发现注解配置错误，可开启启动期注解校验：
+
+```yaml
+sql-circuit-breaker:
+  validate-annotations-on-startup: true
+```
+
+开启后，SDK 会在 Spring 单例 Bean 初始化完成后遍历所有 `SqlSessionFactory` 中的 `MappedStatement`，提前解析 Mapper 接口和方法上的 `@SqlCircuitBreaker` 注解，并校验以下规则：
+
+| 注解字段 | 合法值 |
+|---|---|
+| `timeoutMs` | `-1` 表示继承上层配置，或 `> 0` |
+| `circuitOpenMs` | `-1` 表示继承上层配置，或 `> 0` |
+| `failureThreshold` | `-1` 表示继承上层配置，或 `>= 1` |
+
+如果发现非法配置，应用启动会 fail-fast，避免问题延迟到首次调用该 Mapper 时才暴露。校验通过后，注解解析结果会被预热到缓存中，首次真实 SQL 请求无需再做反射解析。
+
+该功能默认关闭：
+
+- 关闭时不影响功能正确性，仍会在首次执行对应 Mapper 时进行懒校验。
+- 开启后只校验 `@SqlCircuitBreaker` 注解值域，不会执行 SQL，也不会改变熔断状态。
+- 若枚举 `MappedStatement` 失败，SDK 会打印 WARN 并退回运行期懒校验，不会因为校验器自身问题阻塞启动。
+
+### 4.4 ThreadLocal 编程式
 
 ```java
 // 场景：当前请求临时放宽超时限制（对所有 SQL 类型统一生效）
@@ -299,7 +324,7 @@ try {
 | `disableCircuitBreaker()` | 完全跳过熔断检测 |
 | `clear()` | 清理 ThreadLocal（必须在 finally 中调用） |
 
-### 4.4 消息通知接入
+### 4.5 消息通知接入
 
 默认不发送任何通知。实现 `MessageCenterClient` 接口并注册为 Spring Bean 即可接入自有通知渠道：
 
@@ -315,7 +340,7 @@ public class MyMessageCenterClient implements MessageCenterClient {
 
 熔断事件 `CircuitBreakerEvent` 包含：应用名、Mapper 方法、SQL 指纹、SQL 类型、耗时、超时阈值、熔断时长、事件时间等字段。
 
-### 4.5 多数据源标识适配（DataSourceKeyResolver）
+### 4.6 多数据源标识适配（DataSourceKeyResolver）
 
 熔断 Key 中包含数据源标识，用于多数据源场景下隔离各数据源的熔断状态。默认实现 `DefaultDataSourceKeyResolver` 基于 MyBatis `Environment ID`。
 
@@ -335,7 +360,7 @@ public class DynamicDataSourceKeyResolver implements DataSourceKeyResolver {
 
 其他框架同理，只需在 `resolve()` 中返回能唯一标识当前数据源的字符串即可。若项目只有单数据源，无需任何配置，默认返回 `"default"`，不受影响。
 
-### 4.6 Metrics 指标（Micrometer）
+### 4.7 Metrics 指标（Micrometer）
 
 #### 激活方式
 
@@ -450,7 +475,7 @@ public class CustomCircuitBreakerMetrics implements SqlCircuitBreakerMetrics {
 
 SDK 通过 `@ConditionalOnMissingBean` 检测，存在自定义实现时自动跳过 Micrometer 实现的注册。
 
-### 4.7 业务调用栈定位（推荐：全局异常处理）
+### 4.8 业务调用栈定位（推荐：全局异常处理）
 
 `SqlCircuitBreakerException` 重写了 `fillInStackTrace()` 跳过堆栈填充，规避高并发快速失败下频繁填栈的 CPU/内存开销。代价是异常对象本身**不带堆栈**，业务方仅靠该异常无法定位具体调用方代码行。
 
@@ -643,7 +668,7 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
     | `failure-threshold` | `>= 1` |
     | `cache-max-size` | `>= 1` |
 
-    全局配置在启动时校验（缺少任意 SQL 类型块或字段非法均会快速失败）；注解在首次 SQL 执行时校验；ThreadLocal 在调用 `set()` 时立即校验。
+    全局配置在启动时校验（缺少任意 SQL 类型块或字段非法均会快速失败）；注解默认在首次 SQL 执行时校验，配置 `sql-circuit-breaker.validate-annotations-on-startup=true` 后可提前到启动期校验；ThreadLocal 在调用 `set()` 时立即校验。
 
 12. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
 
@@ -674,7 +699,7 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
 
     **方式一（推荐）：实现 `DataSourceKeyResolver` 接口**
 
-    适用于 `dynamic-datasource-spring-boot-starter`、Druid 多数据源等运行时切换框架，声明 Bean 覆盖默认实现即可（参见 [4.5 节](#45-多数据源标识适配datasourcekeyresolver)）。
+    适用于 `dynamic-datasource-spring-boot-starter`、Druid 多数据源等运行时切换框架，声明 Bean 覆盖默认实现即可（参见 [4.6 节](#46-多数据源标识适配datasourcekeyresolver)）。
 
     **方式二：配置 MyBatis Environment ID**
 
