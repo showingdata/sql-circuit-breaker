@@ -219,6 +219,7 @@ deleteCache:  circuitKey → CircuitBreakerState
 ```yaml
 sql-circuit-breaker:
   enabled: true
+  auto-inject: true                    # 默认 true：SqlSessionFactory 未注册拦截器时自动兜底注入
   select:
     timeout-ms: 10000                      # SELECT 超时阈值（毫秒），建议 10s
     failure-threshold: 3                   # 连续超时几次触发熔断，SELECT 建议 3
@@ -240,6 +241,8 @@ sql-circuit-breaker:
     circuit-open-ms: 30000
     cache-max-size: 5000
 ```
+
+`auto-inject` 默认开启。正常情况下 MyBatis / MyBatis-Plus 会自动收集 Spring 容器中的 `Interceptor` Bean；如果业务系统手动构建 `SqlSessionFactory`、使用 dynamic-datasource 等多数据源框架，或自定义 MyBatis 配置导致自动收集失效，SDK 会在 `SqlSessionFactory` 初始化后检查拦截器链，发现缺少 `SqlCircuitBreakerInterceptor` 时自动补充注入。该机制不会替换业务已有的 `SqlSessionFactory`，不会修改数据源配置，也不会额外添加分页插件等 MyBatis-Plus 插件。
 
 ### 4.2 注解配置
 
@@ -644,7 +647,30 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
 
 12. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
 
-13. **多数据源场景的熔断隔离**：熔断 Key 包含数据源标识，保证不同数据源的熔断状态互不干扰。根据项目使用的多数据源框架选择适配方式：
+13. **SQL 熔断拦截器兜底注入**：SDK 默认开启 `auto-inject`，会在每个 `SqlSessionFactory` 初始化后检查 MyBatis 拦截器链。如果链路中已经存在 `SqlCircuitBreakerInterceptor`，直接跳过；如果不存在，则通过兜底机制补充注入，避免部分业务系统“已引入依赖并配置参数，但拦截器未生效”的问题。
+
+    该机制只补充注册 SQL 熔断拦截器，不会替换 `SqlSessionFactory`，不会修改数据源，也不会自动添加分页插件等 MyBatis-Plus 插件。启动时会输出检查日志：
+
+    ```text
+    [SqlCircuitBreaker] 检查 SqlSessionFactory [sqlSessionFactory] 拦截器链 | environmentId=default | interceptorCount=1 | registered=true
+    ```
+
+    若触发兜底注入，会输出 WARN 日志：
+
+    ```text
+    [SqlCircuitBreaker] 拦截器已通过兜底机制注入到 SqlSessionFactory [sqlSessionFactory]（MyBatis 自动扫描可能失效，建议排查）
+    ```
+
+    如业务系统存在特殊 MyBatis 初始化逻辑，需要完全自行控制拦截器注册，可关闭兜底机制：
+
+    ```yaml
+    sql-circuit-breaker:
+      auto-inject: false
+    ```
+
+    关闭后，需自行确保 `SqlCircuitBreakerInterceptor` 已注册到目标 `SqlSessionFactory`。
+
+14. **多数据源场景的熔断隔离**：熔断 Key 包含数据源标识，保证不同数据源的熔断状态互不干扰。根据项目使用的多数据源框架选择适配方式：
 
     **方式一（推荐）：实现 `DataSourceKeyResolver` 接口**
 
