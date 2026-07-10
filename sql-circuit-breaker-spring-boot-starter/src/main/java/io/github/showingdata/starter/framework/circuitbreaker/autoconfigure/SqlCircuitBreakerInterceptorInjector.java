@@ -47,8 +47,11 @@ final class SqlCircuitBreakerInterceptorInjector implements BeanPostProcessor, O
         SqlSessionFactory factory = (SqlSessionFactory) bean;
         Configuration configuration = factory.getConfiguration();
         List<Interceptor> interceptors = configuration.getInterceptors();
-        if (containsSqlCircuitBreakerInterceptor(interceptors, interceptor)) {
-            log.debug("[SqlCircuitBreaker] 拦截器已存在于 SqlSessionFactory [{}]，跳过注入", beanName);
+        boolean alreadyRegistered = containsSqlCircuitBreakerInterceptor(interceptors, interceptor);
+        log.info("[SqlCircuitBreaker] 检查 SqlSessionFactory [{}] 拦截器链 | environmentId={} | interceptorCount={} | registered={}",
+                beanName, resolveEnvironmentId(configuration), interceptors.size(), alreadyRegistered);
+        if (alreadyRegistered) {
+            log.info("[SqlCircuitBreaker] 拦截器已存在于 SqlSessionFactory [{}]，跳过兜底注入", beanName);
             return bean;
         }
 
@@ -68,6 +71,13 @@ final class SqlCircuitBreakerInterceptorInjector implements BeanPostProcessor, O
             }
         }
         return false;
+    }
+
+    private String resolveEnvironmentId(Configuration configuration) {
+        if (configuration.getEnvironment() == null) {
+            return "unknown";
+        }
+        return configuration.getEnvironment().getId();
     }
 
     @Override
