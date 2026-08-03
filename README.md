@@ -10,6 +10,13 @@
 [![GitHub last commit](https://img.shields.io/github/last-commit/showingdata/sql-circuit-breaker)](https://github.com/showingdata/sql-circuit-breaker)
 [![MyBatis](https://img.shields.io/badge/ORM-MyBatis%20%7C%20MyBatis--Plus-orange)](https://mybatis.org/)
 
+## 版本迭代记录
+
+| 序号 | 版本号 | 功能说明 | 修订人 |
+|---|---|---|---|
+| 1 | 2.2.x | 基于 MyBatis / MyBatis-Plus 拦截器实现慢 SQL 观测、超时计数、熔断快速失败、多级配置、消息通知与 Metrics 指标。 | chenjiang |
+| 2 | 3.0.0 | 新增熔断 Key 粒度可配（fingerprint / table / datasource）与线程池 / `@Async` 跨线程上下文传播能力，默认行为向后兼容。 | chenjiang |
+
 ## v3.0.0 更新
 
 > 版本号 2.2.x → 3.0.0，主旋律是**粒度灵活化 + 异步上下文传播**。默认行为完全向后兼容，存量配置无需改动即可升级。
