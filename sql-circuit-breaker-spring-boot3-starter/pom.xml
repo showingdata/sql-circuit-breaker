@@ -12,7 +12,7 @@
 
     <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
     <name>sql-circuit-breaker-spring-boot3-starter</name>
-    <version>3.3.0</version>
+    <version>3.0.0</version>
 
     <dependencies>
 
