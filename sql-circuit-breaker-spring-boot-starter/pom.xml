@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.showingdata.starter.framework</groupId>
         <artifactId>sql-circuit-breaker-parent</artifactId>
-        <version>2.2.1</version>
+        <version>3.0.0</version>
     </parent>
 
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
@@ -60,6 +60,13 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
             <optional>true</optional>
+        </dependency>
+
+        <!-- 测试：test scope 不影响发布的 artifact，业务方不感知。版本由 spring-boot-dependencies BOM 管理。-->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
         </dependency>
 
     </dependencies>

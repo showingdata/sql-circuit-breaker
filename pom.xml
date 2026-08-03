@@ -6,7 +6,7 @@
 
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-parent</artifactId>
-    <version>2.2.1</version>
+    <version>3.0.0</version>
     <packaging>pom</packaging>
     <name>sql-circuit-breaker-parent</name>
     <description>基于 MyBatis / MyBatis-Plus 拦截器的 SQL 超时熔断 Spring Boot Starter</description>
@@ -25,6 +25,11 @@
             <name>chenjiang</name>
             <email>yulin95813@outlook.com</email>
             <url>https://github.com/showingdata</url>
+        </developer>
+        <developer>
+            <name>lanyxp</name>
+            <email>lanyxp@163.com</email>
+            <url>https://gitee.com/LanyXP/sql-circuit-breaker</url>
         </developer>
     </developers>
 
@@ -96,6 +101,16 @@
     </dependencyManagement>
 
     <build>
+        <pluginManagement>
+            <plugins>
+                <!-- JUnit 5 需要 surefire 2.22+，否则测试不执行（Tests run: 0）。固定版本避免依赖 Maven 默认的过旧版本。 -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>2.22.2</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
         <plugins>
             <!-- 打 sources jar，Maven Central 必须 -->
             <plugin>
@@ -105,7 +120,9 @@
                 <executions>
                     <execution>
                         <id>attach-sources</id>
-                        <goals><goal>jar-no-fork</goal></goals>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
                     </execution>
                 </executions>
             </plugin>
@@ -121,7 +138,9 @@
                 <executions>
                     <execution>
                         <id>attach-javadocs</id>
-                        <goals><goal>jar</goal></goals>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
                     </execution>
                 </executions>
             </plugin>
@@ -134,7 +153,9 @@
                     <execution>
                         <id>sign-artifacts</id>
                         <phase>verify</phase>
-                        <goals><goal>sign</goal></goals>
+                        <goals>
+                            <goal>sign</goal>
+                        </goals>
                     </execution>
                 </executions>
             </plugin>

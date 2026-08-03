@@ -7,6 +7,10 @@ import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitB
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DefaultDataSourceKeyResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlCircuitBreakerInterceptor;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.CircuitBreakerKeyStrategy;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.DatasourceKeyStrategy;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.FingerprintKeyStrategy;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.TableKeyStrategy;
 import io.github.showingdata.starter.framework.circuitbreaker.message.MessageCenterClient;
 import io.github.showingdata.starter.framework.circuitbreaker.message.NoOpMessageCenterClient;
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.MicrometerCircuitBreakerMetrics;
@@ -49,16 +53,17 @@ import java.util.Set;
  * <p>
  * 注册的 Bean：
  * <ul>
- *   <li>{@link CircuitBreakerRegistry}：熔断状态注册中心</li>
- *   <li>{@link ConfigResolver}：多优先级配置合并器</li>
- *   <li>{@link MessageCenterClient}：消息中心客户端，默认为空实现，业务方可覆盖</li>
- *   <li>{@link DataSourceKeyResolver}：数据源标识解析器，默认基于 Environment ID，业务方可覆盖</li>
- *   <li>{@link SqlCircuitBreakerMetrics}：指标上报，Micrometer 存在时自动启用真实实现</li>
- *   <li>{@link SqlCircuitBreakerInterceptor}：MyBatis 拦截器，MP 自动收集注册</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry}：熔断状态注册中心</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.config.ConfigResolver}：多优先级配置合并器</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.message.MessageCenterClient}：消息中心客户端，默认为空实现，业务方可覆盖</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver}：数据源标识解析器，默认基于 Environment ID，业务方可覆盖</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuitBreakerMetrics}：指标上报，Micrometer 存在时自动启用真实实现</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlCircuitBreakerInterceptor}：MyBatis 拦截器，MP 自动收集注册</li>
  * </ul>
  * </p>
  */
 @Configuration
+@SuppressWarnings({"rawtypes", "unchecked"})
 @EnableConfigurationProperties(SqlCircuitBreakerProperties.class)
 @ConditionalOnClass(name = "org.apache.ibatis.plugin.Interceptor")
 @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "enabled", havingValue = "true", matchIfMissing = false)
@@ -90,7 +95,7 @@ public class SqlCircuitBreakerAutoConfiguration {
      * </ul>
      * <p>
      * 此 {@link BeanPostProcessor} 作为安全网，在所有 {@code SqlSessionFactory} 初始化后检查拦截器链，
-     * 如果发现 {@link SqlCircuitBreakerInterceptor} 未注册，则强制注入，确保熔断器在所有场景下都能生效。
+     * 如果发现 {@link io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlCircuitBreakerInterceptor} 未注册，则强制注入，确保熔断器在所有场景下都能生效。
      * <p>
      * 实际案例：某业务系统使用 MyBatis-Plus + 自定义多数据源配置，自动扫描失效导致熔断器不生效，
      * 通过此兜底机制成功注入。
@@ -104,8 +109,8 @@ public class SqlCircuitBreakerAutoConfiguration {
     }
 
     /**
-     * 启动期注解校验：所有单例就绪后，遍历每个 {@link SqlSessionFactory} 的全部 MappedStatement，
-     * 复用 {@link ConfigResolver#prevalidate} 对 {@code @SqlCircuitBreaker} 注解做值域校验并预热缓存。
+     * 启动期注解校验：所有单例就绪后，遍历每个 {@link org.apache.ibatis.session.SqlSessionFactory} 的全部 MappedStatement，
+     * 复用 {@link io.github.showingdata.starter.framework.circuitbreaker.config.ConfigResolver#prevalidate} 对 {@code @SqlCircuitBreaker} 注解做值域校验并预热缓存。
      * <p>
      * 把注解校验从「首次调用该 Mapper 时」提前到启动期 fail-fast，与 yml 的 {@code props.validate()} 对齐。
      * 注解非法抛出的 {@link IllegalArgumentException} 故意不拦截 → 直接中断启动；
@@ -180,12 +185,46 @@ public class SqlCircuitBreakerAutoConfiguration {
 
     /**
      * 默认数据源标识解析器，基于 MyBatis Environment ID。
-     * 业务方可通过声明自己的 {@link DataSourceKeyResolver} Bean 覆盖，适配 dynamic-datasource 等框架。
+     * 业务方可通过声明自己的 {@link io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver} Bean 覆盖，适配 dynamic-datasource 等框架。
      */
     @Bean
     @ConditionalOnMissingBean(DataSourceKeyResolver.class)
     public DataSourceKeyResolver dataSourceKeyResolver() {
         return new DefaultDataSourceKeyResolver();
+    }
+
+    /**
+     * 熔断 key 策略：默认 fingerprint 粒度（dsKey:sqlType:fingerprintHash），与历史行为一致。
+     * 缺省时（未配置 key-granularity）生效，保证向后兼容。
+     * 业务方可声明自己的 {@link io.github.showingdata.starter.framework.circuitbreaker.keystrategy.CircuitBreakerKeyStrategy} Bean 覆盖三个默认实现。
+     */
+    @Bean
+    @ConditionalOnMissingBean(CircuitBreakerKeyStrategy.class)
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "key-granularity", havingValue = "fingerprint", matchIfMissing = true)
+    public CircuitBreakerKeyStrategy fingerprintKeyStrategy() {
+        return new FingerprintKeyStrategy();
+    }
+
+    /**
+     * 熔断 key 策略：table 粒度（dsKey:sqlType:tableName），同一表的所有 SQL 共享熔断器。
+     * 表名正则提取，解析失败回退到 fingerprintHash，无回归。
+     */
+    @Bean
+    @ConditionalOnMissingBean(CircuitBreakerKeyStrategy.class)
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "key-granularity", havingValue = "table")
+    public CircuitBreakerKeyStrategy tableKeyStrategy() {
+        return new TableKeyStrategy();
+    }
+
+    /**
+     * 熔断 key 策略：datasource 粒度（dsKey:sqlType），同一数据源同类型 SQL 共享熔断器。
+     * 不跨 SQL 类型共享，避免改造 Registry 的四 Cache 结构。
+     */
+    @Bean
+    @ConditionalOnMissingBean(CircuitBreakerKeyStrategy.class)
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "key-granularity", havingValue = "datasource")
+    public CircuitBreakerKeyStrategy datasourceKeyStrategy() {
+        return new DatasourceKeyStrategy();
     }
 
     /**
@@ -228,7 +267,8 @@ public class SqlCircuitBreakerAutoConfiguration {
                                                                      MessageCenterClient messageCenterClient,
                                                                      ConfigResolver configResolver,
                                                                      DataSourceKeyResolver dataSourceKeyResolver,
-                                                                     SqlCircuitBreakerMetrics metrics) {
-        return new SqlCircuitBreakerInterceptor(props, registry, messageCenterClient, configResolver, applicationName, dataSourceKeyResolver, metrics);
+                                                                     SqlCircuitBreakerMetrics metrics,
+                                                                     CircuitBreakerKeyStrategy keyStrategy) {
+        return new SqlCircuitBreakerInterceptor(props, registry, messageCenterClient, configResolver, applicationName, dataSourceKeyResolver, metrics, keyStrategy);
     }
 }

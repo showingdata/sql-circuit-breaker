@@ -10,6 +10,47 @@
 [![GitHub last commit](https://img.shields.io/github/last-commit/showingdata/sql-circuit-breaker)](https://github.com/showingdata/sql-circuit-breaker)
 [![MyBatis](https://img.shields.io/badge/ORM-MyBatis%20%7C%20MyBatis--Plus-orange)](https://mybatis.org/)
 
+## v3.0.0 更新
+
+> 版本号 2.2.x → 3.0.0，主旋律是**粒度灵活化 + 异步上下文传播**。默认行为完全向后兼容，存量配置无需改动即可升级。
+
+### 1. 熔断 Key 粒度可配（`key-granularity`）
+
+历史版本熔断粒度固定为 `数据源:SQL类型:SQL指纹`，DB 级/表级故障时保护碎片化、迟迟不触发。3.0.0 抽出 `CircuitBreakerKeyStrategy` SPI，三档粒度 yml 一键切换：
+
+| 粒度 | 适用故障 | 触发速度 |
+|---|---|---|
+| `fingerprint`（默认） | 单条慢 SQL | 慢 |
+| `table` | 表级故障（锁/索引/数据膨胀） | 快 |
+| `datasource` | DB 级故障（宕机/网络分区） | 最快 |
+
+```yaml
+sql-circuit-breaker:
+  key-granularity: table   # 默认 fingerprint，与历史行为一致
+```
+
+`table` 粒度按 `msId + rawSql` 组合缓存表名，正确处理 `${tableName}` 动态分表 SQL（如 `order_202607` / `order_202608` 各自独立熔断，不互相污染）。详见 [§3.5](#35-熔断-key-粒度key-granularity)。
+
+### 2. 线程池 / `@Async` 跨线程上下文传播
+
+`SqlCircuitBreakerContext` 基于 `ThreadLocal`，跨线程不传播——主线程 `set` 的配置在线程池 worker 上丢失，Mapper 走 yml 默认值而非预期覆盖。3.0.0 提供两个零侵入方案：
+
+- **新线程池**：`SqlCircuitBreakerThreadPoolExecutor`，替换 `new ThreadPoolExecutor(...)` 即自动透传
+- **已有线程池**：`SqlCircuitBreakerTaskUtils.wrap(task)`，提交处一行包装
+
+包装器在 worker 上「先 clear 清残留 → set 还原快照 → 执行 → finally clear 防泄漏」，并做防御性拷贝隔离提交后的 `setTimeout` 等 mutate。详见 [§4.9](#49-线程池async-跨线程上下文传播)。
+
+### 3. 工程化增强
+
+- 引入 JUnit 5 + surefire 2.22.2，补齐 **28 个单元测试**（key 策略 21 + async 传播 7）
+- README 补 §3.5 粒度说明、§4.9 跨线程传播、§6 注意事项更新
+
+### 升级指南
+
+- 默认 `fingerprint` 粒度与历史 Key **逐字符一致**，熔断状态不重置，零改动升级
+- ThreadLocal 编程式 API 不变，新 wrapper 为可选项，不引入新强依赖
+- JDK 8+ / Spring Boot 2.x，无破坏性变更
+
 ## 快速接入
 
 > **版本对应关系（请按 Spring Boot 版本选择对应 artifactId / 分支）**
@@ -167,6 +208,8 @@ select * from order where user_id = ? and status = ?
 
 熔断 Key 为 `datasource_id:sql_type:fingerprint_md5`，例如 `default:SELECT:a3f2c1...`，前缀数据源标识用于多数据源场景下隔离各数据源的熔断状态，SQL 指纹取 MD5 避免超长 Key。
 
+Key 第三段粒度可配（`key-granularity`），支持 fingerprint / table / datasource 三档，详见 [§3.5](#35-熔断-key-粒度key-granularity)。
+
 ### 3.2 熔断状态机
 
 ```
@@ -212,6 +255,63 @@ deleteCache:  circuitKey → CircuitBreakerState
 
 **各类型独立配置的意义**：SELECT 场景通常 SQL 种类多（各种查询条件组合），`cache-max-size` 建议设大（如 10000）；DML 场景 SQL 种类相对少，可设小（如 5000）节省内存。
 
+### 3.5 熔断 Key 粒度（key-granularity）
+
+熔断 Key 决定"哪些 SQL 共享同一个熔断器"。粒度越细，隔离越精确但越容易碎片化；粒度越粗，故障响应越快但误伤面越大。三档可选：
+
+| 粒度 | Key 格式 | 适用故障 | 触发速度 | 误伤范围 |
+|---|---|---|---|---|
+| `fingerprint`（默认） | `ds:sqlType:fingerprintHash` | 单条慢 SQL（执行计划退化） | 慢（按 SQL 模板独立计数） | 仅该条 SQL |
+| `table` | `ds:sqlType:tableName` | 表级故障（锁、索引缺失、数据膨胀） | 快（同表所有 SQL 共享计数） | 同表同类型所有 SQL |
+| `datasource` | `ds:sqlType` | DB 级故障（宕机、网络分区、连接池耗尽） | 最快（同库同类型全部共享） | 同库同类型全部 SQL |
+
+**典型场景对比**：假设 `orders` 表索引被误删，有 50 条不同 SQL 打它，阈值都是 10：
+
+- `fingerprint`：50 条 SQL 各自计数，需 500 次失败才全部保护 → 保护碎片化
+- `table`：50 条 SQL 共享一个"orders 表熔断器"，10 次失败即全部快失败
+- `datasource`：整个 DB 的所有 SELECT 共享，10 次失败即全部 SELECT 快失败
+
+**配置方式**：
+
+```yaml
+sql-circuit-breaker:
+  key-granularity: table   # 默认 fingerprint，可选 table / datasource
+```
+
+默认 `fingerprint` 与历史行为完全一致，无需改动即可升级，存量熔断 Key 不变。
+
+**table 粒度的表名提取**：
+
+- 正则匹配 `FROM`/`INTO`/`UPDATE`/`DELETE FROM` 后的表名，取首个表，小写化
+- schema 限定名 `db.orders` 保留完整
+- JOIN 取首个表（驱动表）
+- 子查询 `FROM (SELECT id FROM orders) t` 提取内层物理表 `orders`
+- 派生表无具名表 `FROM (SELECT 1) t` → 解析失败 → 回退到 fingerprintHash（降级为指纹粒度，无回归）
+- 表名按 `msId + rawSql` 组合缓存：静态 SQL（`#{}` 参数化）rawSql 固定命中缓存只解析一次；动态表名 SQL（`${tableName}` 字符串替换）产生不同 rawSql，各自独立缓存，按月分表的 `order_202607` / `order_202608` 不会互相污染
+
+**datasource 粒度的边界**：
+
+粒度到 `dsKey:sqlType`，不跨 SQL 类型共享（SELECT 与 INSERT 仍独立计数），避免改造 `CircuitBreakerRegistry` 的四 Cache 结构。DB 宕机场景下各类型会各自达阈值快速失败，实践上不影响 DB 级故障的保护效果。
+
+**自定义粒度**：
+
+实现 `CircuitBreakerKeyStrategy` 接口并声明为 Bean，三个默认实现自动让位（`@ConditionalOnMissingBean`）：
+
+```java
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.CircuitBreakerKeyStrategy;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.CircuitBreakerKeyContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class CustomKeyStrategyConfig {
+    @Bean
+    public CircuitBreakerKeyStrategy circuitBreakerKeyStrategy() {
+        return new MyKeyStrategy();  // 例如按 业务域+表 粒度
+    }
+}
+```
+
 ## 4. 使用说明
 
 ### 4.1 全局配置（application.yml）
@@ -220,6 +320,7 @@ deleteCache:  circuitKey → CircuitBreakerState
 sql-circuit-breaker:
   enabled: true
   auto-inject: true                    # 默认 true：SqlSessionFactory 未注册拦截器时自动兜底注入
+  key-granularity: fingerprint         # 默认 fingerprint：按 SQL 指纹；可选 table（按表名）/ datasource（按数据源+SQL类型），见 §3.5
   select:
     timeout-ms: 10000                      # SELECT 超时阈值（毫秒），建议 10s
     failure-threshold: 3                   # 连续超时几次触发熔断，SELECT 建议 3
@@ -549,6 +650,56 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
 
 > **注意**：业务方在 Controller / Service 中用 `catch (SqlCircuitBreakerException e)` 直接捕获是**捕获不到**的——实际抛出的类型是包装后的 `MyBatisSystemException`，`instanceof` 不匹配。统一通过全局 advice 接住，不要在业务代码里直接 try/catch 该异常。
 
+### 4.9 线程池/`@Async` 跨线程上下文传播
+
+`SqlCircuitBreakerContext` 基于 `ThreadLocal`，主线程 `set` 的配置**不会自动传播到线程池/`@Async`/`CompletableFuture.supplyAsync` 的工作线程**——子线程执行 Mapper 时拿不到主线程的配置。SDK 提供两个零侵入方案：
+
+**方案一（推荐，新项目）：替换线程池**
+
+将 `new ThreadPoolExecutor(...)` 改为 `SqlCircuitBreakerThreadPoolExecutor`，其余代码不动，提交的任务自动透传上下文：
+
+```java
+@Configuration
+public class ThreadPoolConfig {
+    @Bean("orderExecutor")
+    public ExecutorService orderExecutor() {
+        return new SqlCircuitBreakerThreadPoolExecutor(
+            4, 8, 60, TimeUnit.SECONDS, new LinkedBlockingQueue<>(1000),
+            new ThreadFactoryBuilder().setNameFormat("order-pool-%d").build());
+    }
+}
+```
+
+业务方提交时无需任何改动：
+
+```java
+orderExecutor.submit(() -> mapper.queryByRegion(region));  // 自动带上主线程 set 的 timeout
+```
+
+**方案二（已有线程池不便替换）：提交处手动包装**
+
+```java
+// Callable
+orderExecutor.submit(SqlCircuitBreakerTaskUtils.wrap(() -> mapper.queryByRegion(region)));
+// Runnable
+orderExecutor.execute(SqlCircuitBreakerTaskUtils.wrap(() -> mapper.updateStatus(ids)));
+```
+
+**包装器的隔离保证**：
+
+- 提交时在调用线程捕获 ThreadLocal 快照（防御性拷贝，隔离提交后的 `setTimeout` 等 mutate）
+- 执行前 `clear` 清掉 worker 线程上前一个 raw 任务可能残留的标签，再 `set` 快照
+- 执行后 `finally clear` 兜底，防池化线程复用导致标签泄漏到下一个任务
+
+**WebFlux/Reactor 场景**：MyBatis 是阻塞 JDBC，响应式管道调 MyBatis 必然走 `Mono.fromCallable` / `subscribeOn(boundedElastic)`。此时应在 `fromCallable` 内部 set/clear，而非依赖外部 set 传播：
+
+```java
+Mono.fromCallable(() -> {
+    SqlCircuitBreakerContext.setTimeout(5000);   // 在执行 JDBC 的同一线程上 set
+    try { return mapper.query(); }
+    finally { SqlCircuitBreakerContext.clear(); }
+}).subscribeOn(Schedulers.boundedElastic());
+```
 
 ## 5. 日志格式
 
@@ -644,7 +795,7 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
 
 5. **SQL 指纹碰撞**：极少数情况下不同 SQL 结构会产生相同指纹，可根据实际需要在指纹前拼接 `mapperId` 降低碰撞概率。
 
-6. **熔断粒度**：当前粒度是 `数据源ID:SQL类型:SQL指纹`。若需要更细粒度（如按 mapperId + SQL），可在 circuitKey 中加入 `ms.getId()`。
+6. **熔断粒度**：默认 `数据源ID:SQL类型:SQL指纹`（fingerprint 粒度），可通过 `key-granularity` 切换为 table（按表名）或 datasource（按数据源+SQL类型），适配表级/DB级故障，详见 [§3.5](#35-熔断-key-粒度key-granularity)。
 
 7. **不取消正在执行中的 SQL**：`timeout-ms` 是 SDK 在 MyBatis 拦截器层的耗时判定阈值，不是 JDBC 查询取消时间。一次 SQL 已经发送到 DB 后，SDK 会等待 `invocation.proceed()` 返回或抛出异常，再根据耗时决定是否计入熔断；它不会主动中断数据库侧正在执行的语句。熔断生效后，后续相同 SQL 指纹会在本地快速失败，从而避免继续向 DB 发送同类 SQL。
 
@@ -724,6 +875,13 @@ org.mybatis.spring.MyBatisSystemException: nested exception is ...
     ```
 
     单数据源无需任何额外配置，默认使用 `"default"` 作为标识，不受影响。
+
+15. **ThreadLocal 上下文与异步场景**：`SqlCircuitBreakerContext` 基于 `ThreadLocal`，跨线程不会自动传播：
+
+    - **`@Async` / `CompletableFuture.supplyAsync` / 自定义线程池**：主线程 `set` 的配置在 worker 线程拿不到，Mapper 调用走全局默认而非预期覆盖值。需使用 `SqlCircuitBreakerThreadPoolExecutor`（替换线程池）或 `SqlCircuitBreakerTaskUtils.wrap`（手动包装），见 [§4.9](#49-线程池async-跨线程上下文传播)。
+    - **WebFlux / Reactor**：MyBatis 阻塞 JDBC 必走 `Mono.fromCallable`，应在 `fromCallable` 内部 set/clear，而非依赖外部 set 跨线程传播。
+    - **忘 `clear` 会泄漏**：`set()` 后必须在 `finally` 中 `clear()`，否则池化线程下一个任务会读到残留配置造成误路由。使用 `SqlCircuitBreakerThreadPoolExecutor` / `TaskUtils.wrap` 可自动兜底清理，无需业务方手写 finally。
+    - **不覆盖的场景**：Reactor 管道的线程切换不经过 JDK 线程池，上述方案不适用，仍需在 `fromCallable` 内部 set/clear。
 
 ## 7. 模块说明
 
