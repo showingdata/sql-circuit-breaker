@@ -47,11 +47,6 @@ sql-circuit-breaker:
 
 包装器在 worker 上「先 clear 清残留 → set 还原快照 → 执行 → finally clear 防泄漏」，并做防御性拷贝隔离提交后的 `setTimeout` 等 mutate。详见 [§4.9](#49-线程池async-跨线程上下文传播)。
 
-### 3. 工程化增强
-
-- 引入 JUnit 5 + surefire 2.22.2，补齐 **28 个单元测试**（key 策略 21 + async 传播 7）
-- README 补 §3.5 粒度说明、§4.9 跨线程传播、§6 注意事项更新
-
 ### 升级指南
 
 - 默认 `fingerprint` 粒度与历史 Key **逐字符一致**，熔断状态不重置，零改动升级
