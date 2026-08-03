@@ -10,6 +10,8 @@ import io.github.showingdata.starter.framework.circuitbreaker.config.ResolvedCon
 import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitBreakerConfig;
 import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitBreakerProperties;
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.CircuitBreakerKeyContext;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.CircuitBreakerKeyStrategy;
 import io.github.showingdata.starter.framework.circuitbreaker.message.MessageCenterClient;
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry;
@@ -84,6 +86,7 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
     private final String applicationName;
     private final DataSourceKeyResolver dataSourceKeyResolver;
     private final SqlCircuitBreakerMetrics metrics;
+    private final CircuitBreakerKeyStrategy keyStrategy;
 
     /**
      * SQL 指纹缓存：MappedStatement.id → FingerprintEntry。
@@ -115,7 +118,8 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
                                         ConfigResolver configResolver,
                                         String applicationName,
                                         DataSourceKeyResolver dataSourceKeyResolver,
-                                        SqlCircuitBreakerMetrics metrics) {
+                                        SqlCircuitBreakerMetrics metrics,
+                                        CircuitBreakerKeyStrategy keyStrategy) {
         this.props = props;
         this.registry = registry;
         this.messageCenterClient = messageCenterClient;
@@ -123,6 +127,7 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
         this.applicationName = applicationName;
         this.dataSourceKeyResolver = dataSourceKeyResolver;
         this.metrics = metrics;
+        this.keyStrategy = keyStrategy;
     }
 
     @Override
@@ -142,19 +147,6 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
         metrics.recordIntercept(sqlType.name());
 
         // 步骤3：入口快照 ThreadLocal 配置，整次调用使用同一份快照。
-        /**ThreadLocal 生命周期由调用方负责（在自己 finally 中 clear()），拦截器不再兜底清理，
-         * 避免业务方在 Service 层 set 后调用多条 Mapper 时，从第二条 SQL 起 ThreadLocal 失效。
-         * public void processOrders(List<Long> ids) {
-         *       try {
-         *           SqlCircuitBreakerContext.setTimeout(60_000);
-         *           orderMapper.selectByIds(ids);        // ✅ 60s
-         *           orderMapper.updateStatus(ids);       // ✅ 60s
-         *           orderMapper.insertAuditLog(ids);     // ✅ 60s
-         *       } finally {
-         *           SqlCircuitBreakerContext.clear();    // 调用方负责
-         *       }
-         *   }
-         */
         SqlCircuitBreakerConfig tlSnapshot = SqlCircuitBreakerContext.get();
 
         // 步骤4：获取 BoundSql —— 6 参数重载时 args[5] 已是 BoundSql，其余情况通过参数对象动态获取
@@ -176,10 +168,10 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
             fingerprintCache.put(ms.getId(), new FingerprintEntry(rawSql, fingerprint, fingerprintHash));
         }
 
-        // 步骤6：生成熔断 key = 数据源ID + SQL类型 + 指纹的 MD5，数据源ID 隔离多数据源场景下的熔断状态
+        // 步骤6：由 key 策略生成熔断 key（默认 fingerprint：dsKey:sqlType:fingerprintHash；可配 table/datasource）
+        // 策略 SPI 替代原先内联拼装，支持业务方按表/按数据源粒度聚合，避免碎片化
         String dsKey = dataSourceKeyResolver.resolve(ms);
-        String circuitKey = (dsKey != null ? dsKey : "default") + ":" + sqlType.name() + ":" + fingerprintHash;
-
+        String circuitKey = keyStrategy.resolve(new CircuitBreakerKeyContext(ms, boundSql, sqlType, dsKey, fingerprint, fingerprintHash));
         // 步骤7：按优先级解析配置（ThreadLocal 快照 > 方法注解 > 接口注解 > 全局配置）
         ResolvedConfig config = configResolver.resolve(ms, sqlType, tlSnapshot);
 

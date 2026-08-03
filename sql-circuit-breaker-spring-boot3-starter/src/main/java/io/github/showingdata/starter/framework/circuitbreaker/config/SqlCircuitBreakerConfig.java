@@ -39,4 +39,22 @@ public class SqlCircuitBreakerConfig {
      * 适用于定时任务补偿、人工数据修复等明知 SQL 会慢但不希望影响熔断状态的场景。
      */
     private Boolean disableCircuitBreaker;
+
+    /**
+     * 防御性拷贝。字段均为不可变包装类型（Long/Integer/Boolean），浅拷贝即可隔离后续 mutate。
+     * 主要供 {@link io.github.showingdata.starter.framework.circuitbreaker.context.SqlCircuitBreakerTaskWrapper}
+     * 在任务提交时快照当前配置，避免提交后主线程继续 setTimeout 等 mutate 影响子线程拿到的值。
+     *
+     * @param src 原始配置，null 则返回 null
+     */
+    public static SqlCircuitBreakerConfig copyOf(SqlCircuitBreakerConfig src) {
+        if (src == null) {
+            return null;
+        }
+        return new SqlCircuitBreakerConfig()
+                .setTimeoutMs(src.getTimeoutMs())
+                .setCircuitOpenMs(src.getCircuitOpenMs())
+                .setFailureThreshold(src.getFailureThreshold())
+                .setDisableCircuitBreaker(src.getDisableCircuitBreaker());
+    }
 }

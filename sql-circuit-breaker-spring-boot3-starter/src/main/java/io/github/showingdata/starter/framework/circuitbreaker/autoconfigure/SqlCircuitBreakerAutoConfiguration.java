@@ -7,17 +7,25 @@ import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitB
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DefaultDataSourceKeyResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlCircuitBreakerInterceptor;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.CircuitBreakerKeyStrategy;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.DatasourceKeyStrategy;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.FingerprintKeyStrategy;
+import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.TableKeyStrategy;
 import io.github.showingdata.starter.framework.circuitbreaker.message.MessageCenterClient;
 import io.github.showingdata.starter.framework.circuitbreaker.message.NoOpMessageCenterClient;
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.MicrometerCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.NoOpCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry;
+import org.apache.ibatis.mapping.MappedStatement;
+import org.apache.ibatis.session.SqlSessionFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
-import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -26,6 +34,10 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * @author chenjiang
@@ -41,21 +53,24 @@ import org.springframework.context.annotation.Configuration;
  * <p>
  * 注册的 Bean：
  * <ul>
- *   <li>{@link CircuitBreakerRegistry}：熔断状态注册中心</li>
- *   <li>{@link ConfigResolver}：多优先级配置合并器</li>
- *   <li>{@link MessageCenterClient}：消息中心客户端，默认为空实现，业务方可覆盖</li>
- *   <li>{@link DataSourceKeyResolver}：数据源标识解析器，默认基于 Environment ID，业务方可覆盖</li>
- *   <li>{@link SqlCircuitBreakerMetrics}：指标上报，Micrometer 存在时自动启用真实实现</li>
- *   <li>{@link SqlCircuitBreakerInterceptor}：MyBatis 拦截器，MP 自动收集注册</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry}：熔断状态注册中心</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.config.ConfigResolver}：多优先级配置合并器</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.message.MessageCenterClient}：消息中心客户端，默认为空实现，业务方可覆盖</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver}：数据源标识解析器，默认基于 Environment ID，业务方可覆盖</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuitBreakerMetrics}：指标上报，Micrometer 存在时自动启用真实实现</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlCircuitBreakerInterceptor}：MyBatis 拦截器，MP 自动收集注册</li>
  * </ul>
  * </p>
  */
-@AutoConfiguration(afterName = "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration")
+@Configuration
+@SuppressWarnings({"rawtypes", "unchecked"})
 @EnableConfigurationProperties(SqlCircuitBreakerProperties.class)
 @ConditionalOnClass(name = "org.apache.ibatis.plugin.Interceptor")
 @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "enabled", havingValue = "true", matchIfMissing = false)
 @AutoConfigureAfter(name = "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration")
 public class SqlCircuitBreakerAutoConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(SqlCircuitBreakerAutoConfiguration.class);
 
     @Value("${spring.application.name:unknown}")
     private String applicationName;
@@ -80,7 +95,7 @@ public class SqlCircuitBreakerAutoConfiguration {
      * </ul>
      * <p>
      * 此 {@link BeanPostProcessor} 作为安全网，在所有 {@code SqlSessionFactory} 初始化后检查拦截器链，
-     * 如果发现 {@link SqlCircuitBreakerInterceptor} 未注册，则强制注入，确保熔断器在所有场景下都能生效。
+     * 如果发现 {@link io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlCircuitBreakerInterceptor} 未注册，则强制注入，确保熔断器在所有场景下都能生效。
      * <p>
      * 实际案例：某业务系统使用 MyBatis-Plus + 自定义多数据源配置，自动扫描失效导致熔断器不生效，
      * 通过此兜底机制成功注入。
@@ -91,6 +106,58 @@ public class SqlCircuitBreakerAutoConfiguration {
     @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "auto-inject", havingValue = "true", matchIfMissing = true)
     public static BeanPostProcessor sqlCircuitBreakerInterceptorInjector(ObjectProvider<SqlCircuitBreakerInterceptor> interceptorProvider) {
         return new SqlCircuitBreakerInterceptorInjector(interceptorProvider);
+    }
+
+    /**
+     * 启动期注解校验：所有单例就绪后，遍历每个 {@link org.apache.ibatis.session.SqlSessionFactory} 的全部 MappedStatement，
+     * 复用 {@link io.github.showingdata.starter.framework.circuitbreaker.config.ConfigResolver#prevalidate} 对 {@code @SqlCircuitBreaker} 注解做值域校验并预热缓存。
+     * <p>
+     * 把注解校验从「首次调用该 Mapper 时」提前到启动期 fail-fast，与 yml 的 {@code props.validate()} 对齐。
+     * 注解非法抛出的 {@link IllegalArgumentException} 故意不拦截 → 直接中断启动；
+     * 仅对「枚举 MappedStatement」这一步做兜底：MyBatis 版本差异等导致枚举失败时记 WARN 并退回懒校验，
+     * 不因校验器自身问题阻塞启动。
+     * <p>
+     * 默认关闭，需显式配置 {@code sql-circuit-breaker.validate-annotations-on-startup=true} 开启。
+     * 关闭时仍有运行期懒校验（首次调用该 Mapper 时校验）兜底，不影响功能正确性。
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "validate-annotations-on-startup", havingValue = "true", matchIfMissing = false)
+    public SmartInitializingSingleton sqlCircuitBreakerAnnotationValidator(ObjectProvider<SqlSessionFactory> sqlSessionFactories, ConfigResolver configResolver) {
+        return () -> {
+            Set<String> seen = new HashSet<>();
+            int warmed = 0;
+            for (SqlSessionFactory factory : sqlSessionFactories) {
+                Collection<?> statements;
+                try {
+                    statements = factory.getConfiguration().getMappedStatements();
+                } catch (Throwable t) {
+                    log.warn("[SqlCircuitBreaker] 枚举 MappedStatement 失败，跳过该 SqlSessionFactory 的启动期注解校验，退回运行期懒校验", t);
+                    continue;
+                }
+                for (Object obj : statements) {
+                    // StrictMap 对短 key 冲突会塞入 Ambiguity 占位对象（非 MappedStatement），跳过
+                    if (!(obj instanceof MappedStatement)) {
+                        continue;
+                    }
+                    MappedStatement ms = (MappedStatement) obj;
+                    // 同一条语句以全 id + 短 id 各存一份，按 id 去重
+                    if (!seen.add(ms.getId())) {
+                        continue;
+                    }
+                    try {
+                        configResolver.prevalidate(ms);
+                        warmed++;
+                    } catch (IllegalArgumentException e) {
+                        // 注解值域非法 → fail-fast 中断启动（这正是本功能的目的）
+                        throw e;
+                    } catch (Throwable t) {
+                        // 类加载等非校验类意外：不阻塞启动，退回运行期懒校验
+                        log.warn("[SqlCircuitBreaker] 预校验 {} 时遇到非校验类异常，跳过，退回运行期懒校验", ms.getId(), t);
+                    }
+                }
+            }
+            log.info("[SqlCircuitBreaker] 启动期注解校验完成，共校验并预热 {} 条 MappedStatement", warmed);
+        };
     }
 
     @Bean
@@ -118,12 +185,46 @@ public class SqlCircuitBreakerAutoConfiguration {
 
     /**
      * 默认数据源标识解析器，基于 MyBatis Environment ID。
-     * 业务方可通过声明自己的 {@link DataSourceKeyResolver} Bean 覆盖，适配 dynamic-datasource 等框架。
+     * 业务方可通过声明自己的 {@link io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver} Bean 覆盖，适配 dynamic-datasource 等框架。
      */
     @Bean
     @ConditionalOnMissingBean(DataSourceKeyResolver.class)
     public DataSourceKeyResolver dataSourceKeyResolver() {
         return new DefaultDataSourceKeyResolver();
+    }
+
+    /**
+     * 熔断 key 策略：默认 fingerprint 粒度（dsKey:sqlType:fingerprintHash），与历史行为一致。
+     * 缺省时（未配置 key-granularity）生效，保证向后兼容。
+     * 业务方可声明自己的 {@link io.github.showingdata.starter.framework.circuitbreaker.keystrategy.CircuitBreakerKeyStrategy} Bean 覆盖三个默认实现。
+     */
+    @Bean
+    @ConditionalOnMissingBean(CircuitBreakerKeyStrategy.class)
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "key-granularity", havingValue = "fingerprint", matchIfMissing = true)
+    public CircuitBreakerKeyStrategy fingerprintKeyStrategy() {
+        return new FingerprintKeyStrategy();
+    }
+
+    /**
+     * 熔断 key 策略：table 粒度（dsKey:sqlType:tableName），同一表的所有 SQL 共享熔断器。
+     * 表名正则提取，解析失败回退到 fingerprintHash，无回归。
+     */
+    @Bean
+    @ConditionalOnMissingBean(CircuitBreakerKeyStrategy.class)
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "key-granularity", havingValue = "table")
+    public CircuitBreakerKeyStrategy tableKeyStrategy() {
+        return new TableKeyStrategy();
+    }
+
+    /**
+     * 熔断 key 策略：datasource 粒度（dsKey:sqlType），同一数据源同类型 SQL 共享熔断器。
+     * 不跨 SQL 类型共享，避免改造 Registry 的四 Cache 结构。
+     */
+    @Bean
+    @ConditionalOnMissingBean(CircuitBreakerKeyStrategy.class)
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "key-granularity", havingValue = "datasource")
+    public CircuitBreakerKeyStrategy datasourceKeyStrategy() {
+        return new DatasourceKeyStrategy();
     }
 
     /**
@@ -166,7 +267,8 @@ public class SqlCircuitBreakerAutoConfiguration {
                                                                      MessageCenterClient messageCenterClient,
                                                                      ConfigResolver configResolver,
                                                                      DataSourceKeyResolver dataSourceKeyResolver,
-                                                                     SqlCircuitBreakerMetrics metrics) {
-        return new SqlCircuitBreakerInterceptor(props, registry, messageCenterClient, configResolver, applicationName, dataSourceKeyResolver, metrics);
+                                                                     SqlCircuitBreakerMetrics metrics,
+                                                                     CircuitBreakerKeyStrategy keyStrategy) {
+        return new SqlCircuitBreakerInterceptor(props, registry, messageCenterClient, configResolver, applicationName, dataSourceKeyResolver, metrics, keyStrategy);
     }
 }

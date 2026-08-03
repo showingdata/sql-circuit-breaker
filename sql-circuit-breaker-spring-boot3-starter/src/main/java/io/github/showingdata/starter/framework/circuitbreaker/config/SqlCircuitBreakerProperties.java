@@ -5,6 +5,7 @@ import org.apache.ibatis.mapping.SqlCommandType;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -40,6 +41,17 @@ public class SqlCircuitBreakerProperties {
 
     private boolean enabled = false;
 
+    /**
+     * 熔断 key 粒度，决定熔断隔离范围：
+     * <ul>
+     *   <li>fingerprint（默认）：dsKey:sqlType:fingerprintHash，按 SQL 指纹，最细</li>
+     *   <li>table：dsKey:sqlType:tableName，按表名，表级故障更快熔断</li>
+     *   <li>datasource：dsKey:sqlType，按数据源+SQL类型，DB 级故障最快熔断</li>
+     * </ul>
+     * 见 CircuitBreakerKeyStrategy 各实现。
+     */
+    private String keyGranularity = "fingerprint";
+
     private SqlTypeConfig select;
     private SqlTypeConfig insert;
     private SqlTypeConfig update;
@@ -55,11 +67,16 @@ public class SqlCircuitBreakerProperties {
      */
     public SqlTypeConfig getConfigByType(SqlCommandType type) {
         switch (type) {
-            case SELECT: return select;
-            case INSERT: return insert;
-            case UPDATE: return update;
-            case DELETE: return delete;
-            default: throw new IllegalArgumentException("[SqlCircuitBreaker] 不支持的 SQL 类型: " + type);
+            case SELECT:
+                return select;
+            case INSERT:
+                return insert;
+            case UPDATE:
+                return update;
+            case DELETE:
+                return delete;
+            default:
+                throw new IllegalArgumentException("[SqlCircuitBreaker] 不支持的 SQL 类型: " + type);
         }
     }
 
@@ -72,6 +89,11 @@ public class SqlCircuitBreakerProperties {
         validateType("insert", insert);
         validateType("update", update);
         validateType("delete", delete);
+        if (keyGranularity == null
+                || !Arrays.asList("fingerprint", "table", "datasource").contains(keyGranularity)) {
+            throw new IllegalStateException(
+                    "[SqlCircuitBreaker] sql-circuit-breaker.key-granularity 取值必须是 fingerprint/table/datasource，当前值：" + keyGranularity);
+        }
     }
 
     private void validateType(String name, SqlTypeConfig config) {
@@ -109,10 +131,10 @@ public class SqlCircuitBreakerProperties {
          * timeout / open / fast.fail 三项指标是否带 mapper_id 标签。
          * <p>
          * - true（默认）：保留 mapper_id 标签，Grafana 可按 Mapper 维度排序定位问题，
-         *   但时间序列数 = Mapper 方法数 × SQL 类型数 × 3，大型系统（数百 Mapper × 多副本 × 多服务）
-         *   可能撑爆 Prometheus 后端的时间序列预算。<br>
+         * 但时间序列数 = Mapper 方法数 × SQL 类型数 × 3，大型系统（数百 Mapper × 多副本 × 多服务）
+         * 可能撑爆 Prometheus 后端的时间序列预算。<br>
          * - false：去掉 mapper_id 标签，三项指标仅按 sql_type 聚合，时间序列数固定为 12，
-         *   定位具体 Mapper 改用日志中的 mapper 字段（`[SqlCircuitBreaker] 熔断开启 | mapper=xxx`）。
+         * 定位具体 Mapper 改用日志中的 mapper 字段（`[SqlCircuitBreaker] 熔断开启 | mapper=xxx`）。
          * <p>
          * intercept.total 和 open.count 不受此开关影响（前者本就无 mapper_id 标签，后者是 Gauge）。
          */
