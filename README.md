@@ -136,8 +136,10 @@ sql-circuit-breaker:
 | 能力 | 说明 |
 |---|---|
 | 慢 SQL 检测 | 按 SQL 类型（SELECT/INSERT/UPDATE/DELETE）独立配置耗时阈值，SQL 执行完成后根据实际耗时判断是否超阈值 |
-| 自动熔断 | 连续超阈值后自动进入熔断状态，熔断期间相同 SQL 指纹本地快速失败，不发送到 DB |
+| 自动熔断 | 连续超阈值后自动进入熔断状态，熔断期间命中相同熔断 Key 的请求本地快速失败，不发送到 DB |
+| 熔断粒度可配 | 支持 `fingerprint` / `table` / `datasource` 三档熔断 Key 粒度，兼顾单 SQL 精准隔离、表级故障快速保护、数据源级故障兜底保护 |
 | 多级配置 | 全局配置 → Mapper 接口注解 → Mapper 方法注解 → ThreadLocal 编程式覆盖 |
+| 异步上下文传播 | 提供 `SqlCircuitBreakerThreadPoolExecutor` 与 `SqlCircuitBreakerTaskUtils.wrap(...)`，解决 `ThreadLocal` 在线程池 / `@Async` 场景下不自动传播的问题，并在任务结束后清理上下文防泄漏 |
 | 快速失败 | 熔断期间抛出指定业务异常，记录结构化错误日志 |
 | 消息通知 | 实现 `MessageCenterClient` 接口即可接入自有通知渠道，默认空操作 |
 | 多数据源隔离 | 实现 `DataSourceKeyResolver` 接口即可适配任意数据源框架（如 dynamic-datasource），默认基于 MyBatis Environment ID |
