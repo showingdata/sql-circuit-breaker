@@ -70,7 +70,7 @@ sql-circuit-breaker:
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>2.2.1</version>
+    <version>3.0.0</version>
 </dependency>
 ```
 
@@ -80,7 +80,7 @@ sql-circuit-breaker:
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
-    <version>2.2.0</version>
+    <version>3.0.0</version>
 </dependency>
 ```
 
