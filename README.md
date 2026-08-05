@@ -16,6 +16,42 @@
 |---|---|---|---|
 | 1 | 2.2.x | 基于 MyBatis / MyBatis-Plus 拦截器实现慢 SQL 观测、超时计数、熔断快速失败、多级配置、消息通知与 Metrics 指标。 | chenjiang |
 | 2 | 3.0.0 | 新增熔断 Key 粒度可配（fingerprint / table / datasource）与线程池 / `@Async` 跨线程上下文传播能力，默认行为向后兼容。 | chenjiang |
+| 3 | 3.0.1 | 优化 table 粒度表名提取准确性：正则前剥离字符串字面量和注释；新增表名解析缓存上限，避免动态表名场景缓存无界增长。 | chenjiang |
+
+## v3.0.1 更新
+
+> 3.0.1 是 `table` 粒度的稳定性修复版本，重点解决业务系统集成时发现的表名误提取和表名缓存增长问题。默认 `fingerprint` / `datasource` 粒度行为不变。
+
+### 1. TableKeyStrategy 表名提取更准确
+
+`table` 粒度需要从 SQL 中提取表名。历史实现直接在原始 SQL 上跑正则，遇到字符串字面量或注释中包含 `from` / `delete from` 等关键字时，可能把字面量或注释内容误识别成表名。
+
+3.0.1 在表名正则提取前统一调用 `SqlFingerprintUtils.stripLiteralsAndComments(sql)`：
+
+- 先替换字符串字面量，避免 `'x from y'`、`'delete from orders'` 干扰表名提取
+- 再剥离单行注释、多行注释和 `#` 注释，避免 `/* FROM dual */`、`-- from fake` 这类注释内容被误识别
+- 清洗逻辑与 SQL 指纹提取共用同一工具方法，避免两套 SQL 预处理规则漂移
+
+示例：
+
+```sql
+SELECT 'x from y' FROM users WHERE id = ?
+```
+
+修复后 `table` 粒度提取结果为 `users`，不会误提取为 `y`。
+
+### 2. 表名解析缓存增加容量上限
+
+`table` 粒度按 `msId + rawSql` 组合缓存表名，保证 `${tableName}` 动态分表场景下不同物理表不会互相污染。例如：
+
+```sql
+SELECT * FROM order_202607 WHERE id = ?
+SELECT * FROM order_202608 WHERE id = ?
+```
+
+两条 SQL 会分别生成 `order_202607` 和 `order_202608` 的表级熔断 Key。
+
+3.0.1 将表名解析缓存改为有界缓存，容量上限为 `10_000` 条，超出后按 LRU 驱逐，避免按天/月分表、动态 SQL 变体较多时缓存长期无界增长。被驱逐条目再次访问时会重新解析表名，不影响熔断 Key 正确性。
 
 ## v3.0.0 更新
 
@@ -72,7 +108,7 @@ sql-circuit-breaker:
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
-    <version>3.0.0</version>
+    <version>3.0.1</version>
 </dependency>
 ```
 
@@ -82,7 +118,7 @@ sql-circuit-breaker:
 <dependency>
     <groupId>io.github.showingdata.starter.framework</groupId>
     <artifactId>sql-circuit-breaker-spring-boot3-starter</artifactId>
-    <version>3.0.0</version>
+    <version>3.0.1</version>
 </dependency>
 ```
 
@@ -291,7 +327,7 @@ sql-circuit-breaker:
 - JOIN 取首个表（驱动表）
 - 子查询 `FROM (SELECT id FROM orders) t` 提取内层物理表 `orders`
 - 派生表无具名表 `FROM (SELECT 1) t` → 解析失败 → 回退到 fingerprintHash（降级为指纹粒度，无回归）
-- 表名按 `msId + rawSql` 组合缓存：静态 SQL（`#{}` 参数化）rawSql 固定命中缓存只解析一次；动态表名 SQL（`${tableName}` 字符串替换）产生不同 rawSql，各自独立缓存，按月分表的 `order_202607` / `order_202608` 不会互相污染
+- 表名按 `msId + rawSql` 组合缓存：静态 SQL（`#{}` 参数化）rawSql 固定命中缓存只解析一次；动态表名 SQL（`${tableName}` 字符串替换）产生不同 rawSql，各自独立缓存，按月分表的 `order_202607` / `order_202608` 不会互相污染。缓存有 10000 条硬上界（LRU 驱逐），防止按天/月分表等 rawSql 无限变体场景下内存缓慢增长
 
 **datasource 粒度的边界**：
 

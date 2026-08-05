@@ -1,5 +1,6 @@
 package io.github.showingdata.starter.framework.circuitbreaker.keystrategy;
 
+import com.google.common.cache.Cache;
 import org.apache.ibatis.builder.StaticSqlSource;
 import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.MappedStatement;
@@ -7,6 +8,7 @@ import org.apache.ibatis.mapping.SqlCommandType;
 import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -130,5 +132,51 @@ class TableKeyStrategyTest {
         CircuitBreakerKeyContext c2 = ctx("SELECT * FROM orders WHERE id=?", SqlCommandType.SELECT, "ds", "h2");
         assertEquals("ds:SELECT:orders", strategy.resolve(c1));
         assertEquals("ds:SELECT:orders", strategy.resolve(c2));
+    }
+
+    @Test
+    void select_stringLiteralWithFrom_ignored() {
+        // 字符串字面量中的 'x from y' 不是表名：修复前在 rawSql 上直接跑正则会误提取 y
+        assertEquals("ds:SELECT:users",
+                strategy.resolve(ctx("SELECT 'x from y' FROM users WHERE id=?", SqlCommandType.SELECT, "ds", "h")));
+    }
+
+    @Test
+    void select_stringLiteralWithDeleteFrom_ignored() {
+        // 字面量含 'delete from orders'：不应污染当前 SELECT 的表名提取
+        assertEquals("ds:SELECT:users",
+                strategy.resolve(ctx("SELECT * FROM users WHERE remark = 'delete from orders'", SqlCommandType.SELECT, "ds", "h")));
+    }
+
+    @Test
+    void select_multiLineCommentWithFrom_ignored() {
+        // 多行注释中的 FROM dual 出现在真实 FROM 之前：修复前会误提取 dual
+        assertEquals("ds:SELECT:users",
+                strategy.resolve(ctx("SELECT /* placeholder FROM dual */ * FROM users", SqlCommandType.SELECT, "ds", "h")));
+    }
+
+    @Test
+    void select_singleLineCommentWithFrom_ignored() {
+        // 单行注释中的 from fake 出现在真实 FROM 之前：不应被误提取
+        assertEquals("ds:SELECT:orders",
+                strategy.resolve(ctx("SELECT * -- fetch from fake\n FROM orders WHERE id=?", SqlCommandType.SELECT, "ds", "h")));
+    }
+
+    @Test
+    void tableCache_boundedAndEvictionSafe() throws Exception {
+        // 动态表名场景 rawSql 变体无界：缓存必须有硬上界（LRU），否则缓慢泄漏内存。
+        // TABLE_CACHE_MAX_SIZE = 10_000，灌入上界 + 100 个不同 rawSql：
+        // 1) 缓存容量不超过上界；2) 旧条目被驱逐后重新访问，重新提取结果仍正确。
+        int maxSize = 10_000;
+        for (int i = 0; i < maxSize + 100; i++) {
+            strategy.resolve(ctx("SELECT * FROM order_" + i + " WHERE id=?", SqlCommandType.SELECT, "ds", "h" + i));
+        }
+        Field f = TableKeyStrategy.class.getDeclaredField("tableCache");
+        f.setAccessible(true);
+        Cache<?, ?> cache = (Cache<?, ?>) f.get(strategy);
+        assertTrue(cache.size() <= maxSize, "tableCache 应不超过上界 " + maxSize + "，实际：" + cache.size());
+        // 最早灌入的 order_0 已被 LRU 驱逐，重新访问应重新提取而非返回脏数据
+        assertEquals("ds:SELECT:order_0",
+                strategy.resolve(ctx("SELECT * FROM order_0 WHERE id=?", SqlCommandType.SELECT, "ds", "h0")));
     }
 }

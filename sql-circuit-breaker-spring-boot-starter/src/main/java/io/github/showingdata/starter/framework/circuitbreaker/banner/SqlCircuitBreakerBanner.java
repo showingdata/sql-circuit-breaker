@@ -46,6 +46,6 @@ public class SqlCircuitBreakerBanner {
     private static String getVersion() {
         Package pkg = SqlCircuitBreakerBanner.class.getPackage();
         String version = (pkg != null) ? pkg.getImplementationVersion() : null;
-        return (version != null) ? version : "3.0.0";
+        return (version != null) ? version : "3.0.1";
     }
 }
