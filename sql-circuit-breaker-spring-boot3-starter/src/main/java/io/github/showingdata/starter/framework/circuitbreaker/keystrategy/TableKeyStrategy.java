@@ -1,8 +1,10 @@
 package io.github.showingdata.starter.framework.circuitbreaker.keystrategy;
 
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import io.github.showingdata.starter.framework.circuitbreaker.SqlFingerprintUtils;
 import org.apache.ibatis.mapping.SqlCommandType;
 
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -15,7 +17,11 @@ import java.util.regex.Pattern;
  * 表名通过正则提取，解析失败（派生表无具名表等）回退到 fingerprintHash，
  * 即降级为指纹粒度，无回归。结果小写化。
  * <p>
- * 缓存策略：按 msId + rawSql 组合缓存表名。
+ * 正则前先通过 {@link io.github.showingdata.starter.framework.circuitbreaker.SqlFingerprintUtils#stripLiteralsAndComments}
+ * 剥离字符串字面量和注释，防止字面量/注释内容中的关键字（如 'x from y'、/&#42; FROM dual &#42;/）被误识别为表名。
+ * <p>
+ * 缓存策略：按 msId + rawSql 组合缓存表名，容量硬上界 10_000 条（LRU 驱逐），
+ * 防止按天/月分表等 rawSql 无限变体场景下内存缓慢增长。
  * <ul>
  *   <li>静态 SQL（#{} 参数化）：同 Mapper 方法的 rawSql 固定，命中缓存只解析一次。</li>
  *   <li>动态表名 SQL（${tableName} 替换）：同 Mapper 方法产生不同 rawSql，
@@ -42,13 +48,21 @@ public class TableKeyStrategy implements CircuitBreakerKeyStrategy {
     private static final String CACHE_KEY_SEP = "|";
 
     /**
+     * 表名缓存硬上界（LRU 驱逐）。动态表名场景（按天/月分表 ${tableName}）rawSql 变体
+     * 随时间无限增长，无上界会缓慢泄漏内存；超出后驱逐最久未访问条目，
+     * 重新提取仅一次清理 + 正则开销，代价可接受。
+     */
+    private static final int TABLE_CACHE_MAX_SIZE = 10_000;
+
+    /**
      * 表名缓存：msId + sep + rawSql → 表名（或 "" 表示解析失败走指纹回退）。
      * 组合键确保动态表名 SQL（${tableName}）各自独立缓存，不互相污染。
-     * 缓存无上界，与 SqlCircuitBreakerInterceptor.fingerprintCache 一致；
-     * 实际条目数受 Mapper 方法数 × 每方法 rawSql 变体数约束，可控。
+     * 容量硬上界 {@link #TABLE_CACHE_MAX_SIZE}（LRU），防止动态表名场景内存无限增长。
      * 解析失败用 "" 哨兵缓存，避免同一 (msId, rawSql) 反复触发正则。
      */
-    private final ConcurrentHashMap<String, String> tableCache = new ConcurrentHashMap<>();
+    private final Cache<String, String> tableCache = CacheBuilder.newBuilder()
+            .maximumSize(TABLE_CACHE_MAX_SIZE)
+            .build();
 
     @Override
     public String resolve(CircuitBreakerKeyContext ctx) {
@@ -56,7 +70,7 @@ public class TableKeyStrategy implements CircuitBreakerKeyStrategy {
         String rawSql = ctx.getBoundSql().getSql();
         SqlCommandType sqlType = ctx.getSqlCommandType();
         String cacheKey = ctx.getMappedStatement().getId() + CACHE_KEY_SEP + rawSql;
-        String cached = tableCache.computeIfAbsent(cacheKey, k -> {
+        String cached = tableCache.asMap().computeIfAbsent(cacheKey, k -> {
             String t = extractTable(rawSql, sqlType);
             return (t != null) ? t : "";  // "" 哨兵：解析失败也缓存，避免反复正则
         });
@@ -67,22 +81,24 @@ public class TableKeyStrategy implements CircuitBreakerKeyStrategy {
 
     /**
      * 按 SQL 类型提取目标表名，返回小写表名；解析失败返回 null（由调用方回退到指纹）。
+     * 正则前先剥离字符串字面量和注释，防止其内容中的关键字被误识别为表名。
      */
     private String extractTable(String sql, SqlCommandType type) {
         if (sql == null) {
             return null;
         }
+        String cleaned = SqlFingerprintUtils.stripLiteralsAndComments(sql);
         switch (type) {
             case SELECT:
-                return lower(firstGroup(FROM_PATTERN, sql));
+                return lower(firstGroup(FROM_PATTERN, cleaned));
             case INSERT:
-                return lower(firstGroup(INTO_PATTERN, sql));
+                return lower(firstGroup(INTO_PATTERN, cleaned));
             case UPDATE:
-                return lower(firstGroup(UPDATE_PATTERN, sql));
+                return lower(firstGroup(UPDATE_PATTERN, cleaned));
             case DELETE:
-                String t = firstGroup(DELETE_FROM_PATTERN, sql);
+                String t = firstGroup(DELETE_FROM_PATTERN, cleaned);
                 if (t == null) {
-                    t = firstGroup(DELETE_PATTERN, sql);
+                    t = firstGroup(DELETE_PATTERN, cleaned);
                 }
                 return lower(t);
             default:

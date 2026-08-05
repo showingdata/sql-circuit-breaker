@@ -29,10 +29,12 @@ public class SqlFingerprintUtils {
     private static final Pattern WHITESPACE_PATTERN = Pattern.compile("\\s+");
 
     /**
-     * 提取 SQL 指纹：替换字符串字面量 → 去注释 → 小写 → 替换数字为 ? → 归一化 IN 子句 → 合并空白。
-     * 参数值不同但结构相同的 SQL 产生相同指纹，作为熔断匹配单位。
+     * 剥离字符串字面量和注释，返回清理后的 SQL（不做小写化/数字替换/空白合并）。
+     * 供需要在 SQL 结构上做正则分析的场景（如 TableKeyStrategy 表名提取）使用：
+     * 防止字面量/注释内容中的关键字（如 'x from y'、/&#42; FROM dual &#42;/）被误识别为 SQL 结构。
+     * 与 {@link #extract} 的前两步是同一事实源，避免两套清理逻辑漂移。
      */
-    public static String extract(String sql) {
+    public static String stripLiteralsAndComments(String sql) {
         if (sql == null) {
             return "";
         }
@@ -41,8 +43,20 @@ public class SqlFingerprintUtils {
         // 2. 去注释
         s = SINGLE_LINE_COMMENT_PATTERN.matcher(s).replaceAll("");
         s = HASH_COMMENT_PATTERN.matcher(s).replaceAll("");
-        s = MULTI_LINE_COMMENT_PATTERN.matcher(s).replaceAll("");
-        // 3. 统一小写，替换数字，归一化 IN 子句，合并空白
+        return MULTI_LINE_COMMENT_PATTERN.matcher(s).replaceAll("");
+    }
+
+    /**
+     * 提取 SQL 指纹：替换字符串字面量 → 去注释 → 小写 → 替换数字为 ? → 归一化 IN 子句 → 合并空白。
+     * 参数值不同但结构相同的 SQL 产生相同指纹，作为熔断匹配单位。
+     */
+    public static String extract(String sql) {
+        if (sql == null) {
+            return "";
+        }
+        // 1. 先剥离字符串字面量和注释，避免其内容干扰后续处理
+        String s = stripLiteralsAndComments(sql);
+        // 2. 统一小写，替换数字，归一化 IN 子句，合并空白
         s = s.toLowerCase().trim();
         s = NUMBER_PATTERN.matcher(s).replaceAll("?");
         s = IN_CLAUSE_PATTERN.matcher(s).replaceAll("in (?)");
