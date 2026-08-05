@@ -12,9 +12,9 @@
 
 ## 版本迭代记录
 
-| 序号 | 版本号 | 功能说明 | 修订人 |
-|---|---|---|---|
-| 1 | 2.2.x | 基于 MyBatis / MyBatis-Plus 拦截器实现慢 SQL 观测、超时计数、熔断快速失败、多级配置、消息通知与 Metrics 指标。 | chenjiang |
+| 序号 | 版本号   | 功能说明 | 修订人 |
+|---|-------|---|---|
+| 1 | 2.x.x | 基于 MyBatis / MyBatis-Plus 拦截器实现慢 SQL 观测、超时计数、熔断快速失败、多级配置、消息通知与 Metrics 指标。 | chenjiang |
 | 2 | 3.0.0 | 新增熔断 Key 粒度可配（fingerprint / table / datasource）与线程池 / `@Async` 跨线程上下文传播能力，默认行为向后兼容。 | chenjiang |
 | 3 | 3.0.1 | 优化 table 粒度表名提取准确性：正则前剥离字符串字面量和注释；新增表名解析缓存上限，避免动态表名场景缓存无界增长。 | chenjiang |
 
