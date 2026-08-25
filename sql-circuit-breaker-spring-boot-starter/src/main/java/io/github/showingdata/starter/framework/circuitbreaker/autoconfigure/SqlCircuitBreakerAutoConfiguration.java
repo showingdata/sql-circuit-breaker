@@ -289,7 +289,8 @@ public class SqlCircuitBreakerAutoConfiguration {
     }
 
     /**
-     * SQL 执行超时中断拦截器：独立于熔断器，通过 JDBC Statement.setQueryTimeout 在 SQL 执行中硬性中断。
+     * SQL 执行超时中断拦截器：与熔断器协同，复用最终 timeout-ms，
+     * 通过 JDBC Statement.setQueryTimeout 在 SQL 执行中硬性中断。
      * 默认关闭（execution-timeout.enabled=false，向后兼容）；开启后依赖外层 sql-circuit-breaker.enabled=true
      * （同一自动配置加载，详见 README 4.10）。
      * 同样为 {@link org.apache.ibatis.plugin.Interceptor} 类型 Bean，MyBatis 自动收集；

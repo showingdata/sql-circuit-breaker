@@ -169,7 +169,7 @@ sql-circuit-breaker:
 
 接入完成，重启即生效，无需修改任何业务代码。
 
-> **边界说明**：SDK 默认在 MyBatis 拦截器层统计 SQL 实际执行耗时（事后判定）——某次 SQL 执行完成后，如果耗时超过 `timeout-ms`，才会计入熔断失败次数；达到阈值后，后续相同 SQL 指纹会在本地快速失败，不再发送到 DB。SDK 默认不会中断或取消已发送到数据库、正在执行中的 JDBC SQL；若需**真正中断执行中的 SQL**，可开启独立配置块 `sql-circuit-breaker.execution-timeout`（通过 JDBC `Statement.setQueryTimeout` 在 SQL 执行中硬性掐断），详见 [§4.10](#410-sql-执行超时中断execution-timeout)。不开启时，强制取消执行中的 SQL 需配合数据库驱动、连接池或 MyBatis/JDBC 查询超时能力。
+> **边界说明**：SDK 默认在 MyBatis 拦截器层统计 SQL 实际执行耗时（事后判定）——某次 SQL 执行完成后，如果耗时超过 `timeout-ms`，才会计入熔断失败次数；达到阈值后，后续相同 SQL 指纹会在本地快速失败，不再发送到 DB。SDK 默认不会中断或取消已发送到数据库、正在执行中的 JDBC SQL；若需**真正中断执行中的 SQL**，可开启独立开关配置块 `sql-circuit-breaker.execution-timeout`（通过 JDBC `Statement.setQueryTimeout` 在 SQL 执行中硬性掐断，阈值复用当前 SQL 最终 `timeout-ms`），详见 [§4.10](#410-sql-执行超时中断execution-timeout)。不开启时，强制取消执行中的 SQL 需配合数据库驱动、连接池或 MyBatis/JDBC 查询超时能力。
 
 ## 1. 背景与目标
 
@@ -784,6 +784,7 @@ sql-circuit-breaker:
 
 - 依赖 `sql-circuit-breaker.enabled=true`（同一自动配置加载）；`execution-timeout.enabled=true` 但总开关关闭时不会生效。
 - 与 `disableCircuitBreaker`（ThreadLocal/注解）联动：关闭熔断时不会设置 JDBC queryTimeout；长任务数据修复场景也可通过注解或 ThreadLocal 调大 `timeout-ms`。
+- 与连接池（Druid / HikariCP / Tomcat JDBC 等）不强绑定：SDK 只在 MyBatis prepare 阶段操作当前 `Statement` 的 JDBC 标准 `queryTimeout`，通常会透传到真实驱动；若连接池、事务或 MyBatis 已设置更小超时，SDK 只收紧不放宽；若代理 Statement/驱动不支持 get/setQueryTimeout，则 WARN 放行。
 - 硬 kill 粒度是秒，不要指望毫秒级中断。
 
 **数据库行为边界**：

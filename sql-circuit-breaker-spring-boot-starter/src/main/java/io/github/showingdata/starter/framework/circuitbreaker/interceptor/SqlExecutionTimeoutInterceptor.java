@@ -116,7 +116,7 @@ public class SqlExecutionTimeoutInterceptor implements Interceptor, Ordered {
     }
 
     /**
-     * 设置硬超时：毫秒配置向上取整到秒（最小 1s），与 Statement 现值取 min 只收紧不放宽。
+     * 设置硬超时：最终 timeout-ms 向上取整到秒（最小 1s），与 Statement 现值取 min 只收紧不放宽。
      * 任何 SQLException（含驱动不支持 setQueryTimeout）→ WARN 放行，不阻断 SQL。
      */
     private void applyQueryTimeout(Statement stmt, long timeoutMs) {
