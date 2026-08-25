@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.showingdata.starter.framework</groupId>
         <artifactId>sql-circuit-breaker-parent</artifactId>
-        <version>3.0.1</version>
+        <version>3.0.2</version>
     </parent>
 
     <artifactId>sql-circuit-breaker-spring-boot-starter</artifactId>
@@ -66,6 +66,11 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
 

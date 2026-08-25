@@ -7,6 +7,7 @@ import io.github.showingdata.starter.framework.circuitbreaker.config.SqlCircuitB
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.datasource.DefaultDataSourceKeyResolver;
 import io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlCircuitBreakerInterceptor;
+import io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlExecutionTimeoutInterceptor;
 import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.CircuitBreakerKeyStrategy;
 import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.DatasourceKeyStrategy;
 import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.FingerprintKeyStrategy;
@@ -17,6 +18,8 @@ import io.github.showingdata.starter.framework.circuitbreaker.metrics.Micrometer
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.NoOpCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry;
+import io.github.showingdata.starter.framework.circuitbreaker.timeout.DefaultSqlTimeoutExceptionClassifier;
+import io.github.showingdata.starter.framework.circuitbreaker.timeout.SqlTimeoutExceptionClassifier;
 import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.slf4j.Logger;
@@ -59,6 +62,7 @@ import java.util.Set;
  *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.datasource.DataSourceKeyResolver}：数据源标识解析器，默认基于 Environment ID，业务方可覆盖</li>
  *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuitBreakerMetrics}：指标上报，Micrometer 存在时自动启用真实实现</li>
  *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlCircuitBreakerInterceptor}：MyBatis 拦截器，MP 自动收集注册</li>
+ *   <li>{@link io.github.showingdata.starter.framework.circuitbreaker.interceptor.SqlExecutionTimeoutInterceptor}：SQL 执行超时中断拦截器，默认关闭，见 README 4.10</li>
  * </ul>
  * </p>
  */
@@ -104,8 +108,9 @@ public class SqlCircuitBreakerAutoConfiguration {
      */
     @Bean
     @ConditionalOnProperty(prefix = "sql-circuit-breaker", name = "auto-inject", havingValue = "true", matchIfMissing = true)
-    public static BeanPostProcessor sqlCircuitBreakerInterceptorInjector(ObjectProvider<SqlCircuitBreakerInterceptor> interceptorProvider) {
-        return new SqlCircuitBreakerInterceptorInjector(interceptorProvider);
+    public static BeanPostProcessor sqlCircuitBreakerInterceptorInjector(ObjectProvider<SqlCircuitBreakerInterceptor> interceptorProvider,
+                                                                         ObjectProvider<SqlExecutionTimeoutInterceptor> timeoutInterceptorProvider) {
+        return new SqlCircuitBreakerInterceptorInjector(interceptorProvider, timeoutInterceptorProvider);
     }
 
     /**
@@ -260,6 +265,16 @@ public class SqlCircuitBreakerAutoConfiguration {
         return new NoOpCircuitBreakerMetrics();
     }
 
+    /**
+     * 默认 SQL 超时异常分类器：基于异常类名关键词与 JDBC SQLState 识别主流 driver 的硬超时/取消异常。
+     * 业务方可声明自己的 {@link SqlTimeoutExceptionClassifier} Bean 覆盖，适配自定义 driver（如达梦特定 errorCode）。
+     */
+    @Bean
+    @ConditionalOnMissingBean(SqlTimeoutExceptionClassifier.class)
+    public SqlTimeoutExceptionClassifier sqlTimeoutExceptionClassifier() {
+        return new DefaultSqlTimeoutExceptionClassifier();
+    }
+
     @Bean
     @ConditionalOnMissingBean
     public SqlCircuitBreakerInterceptor sqlCircuitBreakerInterceptor(SqlCircuitBreakerProperties props,
@@ -268,7 +283,21 @@ public class SqlCircuitBreakerAutoConfiguration {
                                                                      ConfigResolver configResolver,
                                                                      DataSourceKeyResolver dataSourceKeyResolver,
                                                                      SqlCircuitBreakerMetrics metrics,
-                                                                     CircuitBreakerKeyStrategy keyStrategy) {
-        return new SqlCircuitBreakerInterceptor(props, registry, messageCenterClient, configResolver, applicationName, dataSourceKeyResolver, metrics, keyStrategy);
+                                                                     CircuitBreakerKeyStrategy keyStrategy,
+                                                                     SqlTimeoutExceptionClassifier timeoutClassifier) {
+        return new SqlCircuitBreakerInterceptor(props, registry, messageCenterClient, configResolver, applicationName, dataSourceKeyResolver, metrics, keyStrategy, timeoutClassifier);
+    }
+
+    /**
+     * SQL 执行超时中断拦截器：独立于熔断器，通过 JDBC Statement.setQueryTimeout 在 SQL 执行中硬性中断。
+     * 默认关闭（execution-timeout.enabled=false，向后兼容）；开启后依赖外层 sql-circuit-breaker.enabled=true
+     * （同一自动配置加载，详见 README 4.10）。
+     * 同样为 {@link org.apache.ibatis.plugin.Interceptor} 类型 Bean，MyBatis 自动收集；
+     * 自动扫描失效场景由 {@link SqlCircuitBreakerInterceptorInjector} 兜底注入。
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "sql-circuit-breaker.execution-timeout", name = "enabled", havingValue = "true", matchIfMissing = false)
+    public SqlExecutionTimeoutInterceptor sqlExecutionTimeoutInterceptor(SqlCircuitBreakerProperties props) {
+        return new SqlExecutionTimeoutInterceptor(props);
     }
 }

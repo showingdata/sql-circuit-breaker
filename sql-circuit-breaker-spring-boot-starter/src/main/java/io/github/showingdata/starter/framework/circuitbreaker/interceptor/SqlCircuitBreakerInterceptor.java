@@ -15,6 +15,7 @@ import io.github.showingdata.starter.framework.circuitbreaker.keystrategy.Circui
 import io.github.showingdata.starter.framework.circuitbreaker.message.MessageCenterClient;
 import io.github.showingdata.starter.framework.circuitbreaker.metrics.SqlCircuitBreakerMetrics;
 import io.github.showingdata.starter.framework.circuitbreaker.registry.CircuitBreakerRegistry;
+import io.github.showingdata.starter.framework.circuitbreaker.timeout.SqlTimeoutExceptionClassifier;
 import org.apache.ibatis.cache.CacheKey;
 import org.apache.ibatis.executor.Executor;
 import org.apache.ibatis.mapping.BoundSql;
@@ -32,6 +33,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -87,6 +89,7 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
     private final DataSourceKeyResolver dataSourceKeyResolver;
     private final SqlCircuitBreakerMetrics metrics;
     private final CircuitBreakerKeyStrategy keyStrategy;
+    private final SqlTimeoutExceptionClassifier timeoutClassifier;
 
     /**
      * SQL 指纹缓存：MappedStatement.id → FingerprintEntry。
@@ -119,7 +122,8 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
                                         String applicationName,
                                         DataSourceKeyResolver dataSourceKeyResolver,
                                         SqlCircuitBreakerMetrics metrics,
-                                        CircuitBreakerKeyStrategy keyStrategy) {
+                                        CircuitBreakerKeyStrategy keyStrategy,
+                                        SqlTimeoutExceptionClassifier timeoutClassifier) {
         this.props = props;
         this.registry = registry;
         this.messageCenterClient = messageCenterClient;
@@ -128,6 +132,7 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
         this.dataSourceKeyResolver = dataSourceKeyResolver;
         this.metrics = metrics;
         this.keyStrategy = keyStrategy;
+        this.timeoutClassifier = timeoutClassifier;
     }
 
     @Override
@@ -194,9 +199,34 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
             throw new SqlCircuitBreakerException(buildFailMessage(ms, circuitKey, fingerprint, sqlType, state, openAt), circuitKey);
         }
 
-        // 步骤11：执行实际 SQL，并统计耗时
+        // 步骤11：执行实际 SQL，并统计耗时。
+        // execution-timeout 开启时写入执行超时上下文（sqlType + 最终 timeout），
+        // 供 StatementHandler.prepare 层的 SqlExecutionTimeoutInterceptor 读取设置 JDBC queryTimeout
         long start = System.nanoTime();
-        Object result = invocation.proceed();
+        Object result;
+        boolean executionTimeoutEnabled = isExecutionTimeoutEnabled(sqlType);
+        SqlExecutionTimeoutContext.Entry previousExecutionTimeoutContext = executionTimeoutEnabled ? SqlExecutionTimeoutContext.set(sqlType, config.getTimeout()) : null;
+        try {
+            result = invocation.proceed();
+        } catch (Throwable e) {
+            // Invocation.proceed() 抛 InvocationTargetException，driver 真实异常包在 cause 里；
+            // classifier 递归遍历 cause 链识别 driver 硬超时/取消异常
+            long cost = (System.nanoTime() - start) / 1000000;
+            // 仅当 execution-timeout 开启时，driver 硬超时/取消才计入熔断失败（默认关闭 → 严格向后兼容：
+            // 不开启该特性的存量业务，任何异常（含驱动超时、取消）都保持「不对异常熔断」原语义，
+            // 避免升级后被连接池 queryTimeout、DB statement_timeout 等既有超时异常意外触发熔断）
+            if (executionTimeoutEnabled && timeoutClassifier.isTimeoutOrCancelled(e)) {
+                // driver 硬超时（execution-timeout 拦截器 setQueryTimeout 触发的中断）→ 计入熔断失败
+                // 否则「SQL 被 driver 中断了，熔断器却收不到任何信号」——下次同类 SQL 仍会进到执行又被中断，熔断永远不触发
+                handleTimeout(ms, sqlType, circuitKey, fingerprint, cost, config, state);
+            }
+            // 其他异常（连接异常、约束违反、语法错误等）保持「不对异常熔断」语义原样抛
+            throw e;
+        } finally {
+            if (executionTimeoutEnabled) {
+                SqlExecutionTimeoutContext.restore(previousExecutionTimeoutContext);
+            }
+        }
         long cost = (System.nanoTime() - start) / 1000000;
 
         // 步骤12：SQL 执行成功后，根据耗时更新熔断计数
@@ -208,6 +238,23 @@ public class SqlCircuitBreakerInterceptor implements Interceptor, Ordered, Dispo
             state.onSuccess();
         }
         return result;
+    }
+
+    private boolean isExecutionTimeoutEnabled(SqlCommandType sqlType) {
+        SqlCircuitBreakerProperties.ExecutionTimeoutConfig execCfg = props.getExecutionTimeout();
+        if (execCfg == null || !execCfg.isEnabled()) {
+            return false;
+        }
+        List<String> types = execCfg.getTypes();
+        if (types == null || types.isEmpty()) {
+            return true;
+        }
+        for (String type : types) {
+            if (type != null && sqlType.name().equalsIgnoreCase(type.trim())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void handleTimeout(MappedStatement ms, SqlCommandType sqlType,

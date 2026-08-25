@@ -17,6 +17,22 @@
 | 1 | 2.x.x | 基于 MyBatis / MyBatis-Plus 拦截器实现慢 SQL 观测、超时计数、熔断快速失败、多级配置、消息通知与 Metrics 指标。 | chenjiang |
 | 2 | 3.0.0 | 新增熔断 Key 粒度可配（fingerprint / table / datasource）与线程池 / `@Async` 跨线程上下文传播能力，默认行为向后兼容。 | chenjiang |
 | 3 | 3.0.1 | 优化 table 粒度表名提取准确性：正则前剥离字符串字面量和注释；新增表名解析缓存上限，避免动态表名场景缓存无界增长。 | chenjiang |
+| 4 | 3.0.2 | 新增 SQL 执行超时中断（execution-timeout）：复用当前 SQL 最终 `timeout-ms`，JDBC `setQueryTimeout` 硬性中断、min-with-current 只收紧不放宽、`types` 可收窄，默认关闭向后兼容。 | chenjiang |
+
+## v3.0.2 更新
+
+> 3.0.2 新增可选能力 **SQL 执行超时中断（execution-timeout）**：默认关闭、向后兼容，存量业务零改动升级。解决「SQL 跑 60s、阈值 10s，却要等跑完才判定」的痛点——开启后在 SQL 执行中真正硬性中断，而非事后对比。
+
+### 1. 新增执行超时中断拦截器 `SqlExecutionTimeoutInterceptor`
+
+- 拦截 MyBatis `StatementHandler.prepare`，对 JDBC `Statement` 调用 `setQueryTimeout`，超时点由驱动/数据库侧掐断执行
+- 独立开关 `sql-circuit-breaker.execution-timeout.enabled`（默认关闭），超时阈值复用当前 SQL 按优先级解析后的 `timeout-ms`
+- `min-with-current`：只收紧不放宽，尊重 XML `timeout` / `default-statement-timeout` / Spring 事务超时
+- `types` 可收窄生效范围，缺省 = 全部（SELECT / INSERT / UPDATE / DELETE）
+- 驱动不支持（如部分达梦抛 `SQLFeatureNotSupportedException`）时 WARN 放行，绝不阻断 SQL
+- **与熔断联动**：driver 硬超时异常经 `SqlTimeoutExceptionClassifier` 识别后计入熔断失败，受同一 `enabled` 开关门控避免回归
+
+详见 [§4.10](#410-sql-执行超时中断execution-timeout)。
 
 ## v3.0.1 更新
 
@@ -153,7 +169,7 @@ sql-circuit-breaker:
 
 接入完成，重启即生效，无需修改任何业务代码。
 
-> **边界说明**：SDK 在 MyBatis 拦截器层统计 SQL 实际执行耗时。某次 SQL 执行完成后，如果耗时超过 `timeout-ms`，才会计入熔断失败次数；达到阈值后，后续相同 SQL 指纹会在本地快速失败，不再发送到 DB。SDK 不会中断或取消已经发送到数据库、正在执行中的 JDBC SQL；如需强制取消执行中的 SQL，请配合数据库驱动、连接池或 MyBatis/JDBC 查询超时能力使用。
+> **边界说明**：SDK 默认在 MyBatis 拦截器层统计 SQL 实际执行耗时（事后判定）——某次 SQL 执行完成后，如果耗时超过 `timeout-ms`，才会计入熔断失败次数；达到阈值后，后续相同 SQL 指纹会在本地快速失败，不再发送到 DB。SDK 默认不会中断或取消已发送到数据库、正在执行中的 JDBC SQL；若需**真正中断执行中的 SQL**，可开启独立配置块 `sql-circuit-breaker.execution-timeout`（通过 JDBC `Statement.setQueryTimeout` 在 SQL 执行中硬性掐断），详见 [§4.10](#410-sql-执行超时中断execution-timeout)。不开启时，强制取消执行中的 SQL 需配合数据库驱动、连接池或 MyBatis/JDBC 查询超时能力。
 
 ## 1. 背景与目标
 
@@ -741,6 +757,42 @@ Mono.fromCallable(() -> {
 }).subscribeOn(Schedulers.boundedElastic());
 ```
 
+### 4.10 SQL 执行超时中断（execution-timeout）
+
+> 可选能力，默认关闭。解决「一条 SQL 跑 60s、熔断阈值设 10s，却要等它跑完才判定」的问题——开启后 SQL 执行超过硬超时会被**真正中断**，而非事后对比。
+
+**原理**：SDK 新增独立拦截器 `SqlExecutionTimeoutInterceptor`，在 MyBatis `StatementHandler.prepare` 拿到真实 JDBC `Statement` 后调用 `Statement.setQueryTimeout(秒)`。超时点由数据库驱动/服务端触发中断，SDK 不额外占用线程做监控。两拦截器协同：Executor 层熔断器解析出最终阈值写入上下文，prepare 层据此设置硬超时。
+
+```yaml
+sql-circuit-breaker:
+  enabled: true                    # execution-timeout 依赖外层总开关
+  execution-timeout:
+    enabled: true                  # 执行硬超时开关，默认 false
+    types: []                     # 生效的 SQL 类型；缺省/空 = 全部（SELECT/INSERT/UPDATE/DELETE）
+```
+
+**特性**：
+
+- **复用最终熔断阈值**：硬超时阈值使用当前 SQL 已解析出的 `timeout-ms`，优先级与熔断完全一致：ThreadLocal > 方法注解 > 接口注解 > application.yml 按 SQL 类型配置。
+- **秒级精度**：JDBC `setQueryTimeout` 单位为秒，`timeout-ms` 会向上取整（1500ms → 2s），最小 1s。
+- **只收紧不放宽（min-with-current）**：读取 Statement 上已生效的 queryTimeout 现值（MyBatis XML `timeout` / `default-statement-timeout` / Spring `@Transactional(timeout)`），取较小值——既有配置更紧则优先，SDK 仅作当前 SQL 最终 `timeout-ms` 对应的硬上限（按 SQL 类型独立，非全局值）。
+- **类型可收窄**：`types` 缺省 = 全部。MySQL 的 `queryTimeout` 对 SELECT 中断可靠；对 UPDATE/DELETE 依赖驱动版本（best-effort，见下表），可先只配 `[SELECT]` 观察，POC 通过后再放开。
+- **容错**：驱动不支持（如部分达梦抛 `SQLFeatureNotSupportedException`）时 WARN 放行，不影响 SQL 正常执行。
+- **与熔断联动**：被硬超时掐断的 SQL 抛出的 driver 超时异常会被 `SqlTimeoutExceptionClassifier` 识别为熔断失败事件，计入连续失败计数；该计入同样受 `types` 限制。这样可避免「SQL 被 driver 中断了，熔断器却收不到任何信号，下次同类 SQL 仍会进到执行又被中断，熔断永远不触发」的逻辑漏洞。该计入仅在 `execution-timeout.enabled=true` 时生效，未开启时严格保持「不对异常熔断」原语义，避免升级回归。业务方可声明自己的 `SqlTimeoutExceptionClassifier` Bean 覆盖默认实现，适配自定义 driver（如达梦特定 errorCode）。其他 SQLException（连接异常、约束违反、语法错误等）仍保持「不对异常熔断」语义，原样上抛不计入。
+
+**激活与边界**：
+
+- 依赖 `sql-circuit-breaker.enabled=true`（同一自动配置加载）；`execution-timeout.enabled=true` 但总开关关闭时不会生效。
+- 与 `disableCircuitBreaker`（ThreadLocal/注解）联动：关闭熔断时不会设置 JDBC queryTimeout；长任务数据修复场景也可通过注解或 ThreadLocal 调大 `timeout-ms`。
+- 硬 kill 粒度是秒，不要指望毫秒级中断。
+
+**数据库行为边界**：
+
+| 数据库 | SELECT | UPDATE/DELETE | 备注 |
+|---|---|---|---|
+| MySQL | ✅ 可靠（KILL QUERY / 服务端中断） | ⚠️ best-effort，依赖驱动版本 | 生产建议 `queryTimeoutKillsConnection=false`（KILL QUERY 方式保连接复用），需 DB 账号有 KILL 权限 |
+| 达梦 | 待 POC | 待 POC | 驱动不支持时 WARN 放行，不阻断 SQL |
+
 ## 5. 日志格式
 
 所有日志使用统一前缀 `[SqlCircuitBreaker]`，便于 ELK 等日志系统过滤。
@@ -837,9 +889,9 @@ Mono.fromCallable(() -> {
 
 6. **熔断粒度**：默认 `数据源ID:SQL类型:SQL指纹`（fingerprint 粒度），可通过 `key-granularity` 切换为 table（按表名）或 datasource（按数据源+SQL类型），适配表级/DB级故障，详见 [§3.5](#35-熔断-key-粒度key-granularity)。
 
-7. **不取消正在执行中的 SQL**：`timeout-ms` 是 SDK 在 MyBatis 拦截器层的耗时判定阈值，不是 JDBC 查询取消时间。一次 SQL 已经发送到 DB 后，SDK 会等待 `invocation.proceed()` 返回或抛出异常，再根据耗时决定是否计入熔断；它不会主动中断数据库侧正在执行的语句。熔断生效后，后续相同 SQL 指纹会在本地快速失败，从而避免继续向 DB 发送同类 SQL。
+7. **熔断阈值默认是事后判定，可选升级为执行中断**：`timeout-ms` 默认只是 SDK 在 MyBatis 拦截器层的耗时判定阈值（事后、毫秒）——一次 SQL 已发送到 DB 后，SDK 会等 `invocation.proceed()` 返回或抛出异常，再按耗时计入熔断。若需**真正中断执行中的 SQL**，请开启 `sql-circuit-breaker.execution-timeout`（见 [§4.10](#410-sql-执行超时中断execution-timeout)）：它复用当前 SQL 最终 `timeout-ms`，在 SQL 执行前通过 JDBC `Statement.setQueryTimeout` 设置硬超时（秒级），到点由驱动/数据库侧掐断。熔断生效后，后续相同 SQL 指纹会在本地快速失败，避免继续向 DB 发送同类 SQL。
 
-8. **不对异常熔断**：只对执行完成后的超阈值耗时计入熔断，SQL 执行抛出的其他异常（如连接异常、语法错误）不纳入熔断计数，避免误判。若业务希望把驱动超时、Socket 超时等特定异常也纳入熔断，可在业务侧结合驱动/连接池超时配置和异常处理策略扩展。
+8. **默认不对异常熔断**：未开启 execution-timeout 时，只对执行完成后的超阈值耗时计入熔断，SQL 执行抛出的异常（如连接异常、语法错误、既有连接池/驱动超时）不纳入熔断计数，避免升级后误判。开启 execution-timeout 后，由 SDK 设置的 JDBC queryTimeout 触发的 driver 超时/取消异常会被 `SqlTimeoutExceptionClassifier` 识别并计入熔断；其他异常仍原样上抛且不计入。
 
 9. **消息通知只发一次**：消息通知仅在熔断首次打开时触发，快速失败路径不发消息，避免高并发下消息风暴。
 
@@ -863,9 +915,9 @@ Mono.fromCallable(() -> {
 
 12. **多实例部署**：熔断状态存储在各实例内存中，各实例独立计数、互不感知，配置阈值应理解为单实例阈值。流量分布不均时可适当调低阈值使单实例更快收敛。
 
-13. **SQL 熔断拦截器兜底注入**：SDK 默认开启 `auto-inject`，会在每个 `SqlSessionFactory` 初始化后检查 MyBatis 拦截器链。如果链路中已经存在 `SqlCircuitBreakerInterceptor`，直接跳过；如果不存在，则通过兜底机制补充注入，避免部分业务系统“已引入依赖并配置参数，但拦截器未生效”的问题。
+13. **SQL 熔断拦截器兜底注入**：SDK 默认开启 `auto-inject`，会在每个 `SqlSessionFactory` 初始化后检查 MyBatis 拦截器链。对每个拦截器分别检查：如果链路中已存在则跳过；如果不存在则通过兜底机制补充注入，避免部分业务系统「已引入依赖并配置参数，但拦截器未生效」的问题。兜底注入覆盖两个拦截器：核心熔断拦截器 `SqlCircuitBreakerInterceptor`（始终注入）；执行硬超时拦截器 `SqlExecutionTimeoutInterceptor`（仅在 `execution-timeout.enabled=true` 且对应 Bean 存在时注入）。
 
-    该机制只补充注册 SQL 熔断拦截器，不会替换 `SqlSessionFactory`，不会修改数据源，也不会自动添加分页插件等 MyBatis-Plus 插件。启动时会输出检查日志：
+    该机制只补充注册拦截器到拦截器链，不会替换 `SqlSessionFactory`，不会修改数据源，也不会自动添加分页插件等 MyBatis-Plus 插件。启动时会输出检查日志：
 
     ```text
     [SqlCircuitBreaker] 检查 SqlSessionFactory [sqlSessionFactory] 拦截器链 | environmentId=default | interceptorCount=1 | registered=true
@@ -884,7 +936,7 @@ Mono.fromCallable(() -> {
       auto-inject: false
     ```
 
-    关闭后，需自行确保 `SqlCircuitBreakerInterceptor` 已注册到目标 `SqlSessionFactory`。
+    关闭后，需自行确保 `SqlCircuitBreakerInterceptor`（以及开启 `execution-timeout` 时的 `SqlExecutionTimeoutInterceptor`）已注册到目标 `SqlSessionFactory`。
 
 14. **多数据源场景的熔断隔离**：熔断 Key 包含数据源标识，保证不同数据源的熔断状态互不干扰。根据项目使用的多数据源框架选择适配方式：
 
@@ -928,6 +980,10 @@ Mono.fromCallable(() -> {
 | 模块 | 说明 |
 |---|---|
 | `SqlCircuitBreakerInterceptor` | 核心拦截器，MyBatis / MyBatis-Plus 自动收集注册 |
+| `SqlExecutionTimeoutInterceptor` | SQL 执行超时中断拦截器（`StatementHandler.prepare` 层 `setQueryTimeout`），通过 `SqlExecutionTimeoutContext` ThreadLocal 复用 `SqlCircuitBreakerInterceptor` 解析出的最终 `timeout-ms`，独立开关默认关闭 |
+| `SqlExecutionTimeoutContext` | 跨拦截器传递硬超时上下文的 ThreadLocal（Executor 层写入、StatementHandler 层读取），含嵌套调用 restore |
+| `SqlTimeoutExceptionClassifier` | driver 超时/取消异常识别接口，业务可覆盖以适配自定义 driver |
+| `DefaultSqlTimeoutExceptionClassifier` | 默认实现：基于异常类名关键词 + JDBC SQLState 识别主流 driver 的超时异常 |
 | `CircuitBreakerCore` | 熔断核心流程（配置解析 → 状态判断 → 计时 → 超时处理），被拦截器复用 |
 | `CircuitBreakerRegistry` | 熔断状态注册中心，按 SQL 类型维护 4 个独立 Guava Cache |
 | `CircuitBreakerState` | 单个 SQL 指纹的两状态（CLOSED/OPEN）状态机 |

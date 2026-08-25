@@ -63,6 +63,13 @@ public class SqlCircuitBreakerProperties {
     private MetricsConfig metrics = new MetricsConfig();
 
     /**
+     * SQL 执行超时中断配置（独立开关，阈值复用熔断配置）。
+     * 默认关闭；开启后通过 JDBC Statement.setQueryTimeout 在 SQL 执行中硬性中断，
+     * 超时阈值复用当前 SQL 按优先级解析后的熔断 timeoutMs。
+     */
+    private ExecutionTimeoutConfig executionTimeout = new ExecutionTimeoutConfig();
+
+    /**
      * 根据 SQL 类型获取对应的配置块。
      */
     public SqlTypeConfig getConfigByType(SqlCommandType type) {
@@ -94,6 +101,7 @@ public class SqlCircuitBreakerProperties {
             throw new IllegalStateException(
                     "[SqlCircuitBreaker] sql-circuit-breaker.key-granularity 取值必须是 fingerprint/table/datasource，当前值：" + keyGranularity);
         }
+        validateExecutionTimeout();
     }
 
     private void validateType(String name, SqlTypeConfig config) {
@@ -114,6 +122,30 @@ public class SqlCircuitBreakerProperties {
         }
         if (config.getCacheMaxSize() == null || config.getCacheMaxSize() < 1) {
             errors.add(prefix + ".cache-max-size 必须 >= 1，当前值：" + config.getCacheMaxSize());
+        }
+        if (!errors.isEmpty()) {
+            throw new IllegalStateException(
+                    "[SqlCircuitBreaker] 配置不合法：\n  - " + String.join("\n  - ", errors));
+        }
+    }
+
+    /**
+     * 执行超时配置校验：types 每项必须是 SELECT/INSERT/UPDATE/DELETE 之一。
+     */
+    private void validateExecutionTimeout() {
+        if (executionTimeout == null) {
+            return;
+        }
+        List<String> errors = new ArrayList<>();
+        if (executionTimeout.getTypes() != null) {
+            for (String t : executionTimeout.getTypes()) {
+                boolean valid = t != null && Arrays.asList("SELECT", "INSERT", "UPDATE", "DELETE")
+                        .contains(t.trim().toUpperCase());
+                if (!valid) {
+                    errors.add("sql-circuit-breaker.execution-timeout.types 含非法值：" + t
+                            + "，合法值：SELECT/INSERT/UPDATE/DELETE");
+                }
+            }
         }
         if (!errors.isEmpty()) {
             throw new IllegalStateException(
@@ -167,5 +199,27 @@ public class SqlCircuitBreakerProperties {
          * 该 SQL 类型熔断状态的 Guava Cache 最大条目数，超出时按 LRU 驱逐。
          */
         private Long cacheMaxSize;
+    }
+
+    /**
+     * SQL 执行超时中断配置块（独立开关，超时阈值复用熔断 timeout-ms，见 README 4.10）。
+     * 开启后对所有（或 types 指定的）SQL 在 JDBC Statement 上设置 queryTimeout，
+     * 到点由驱动/数据库侧真正中断执行，而非等 SQL 跑完后再事后判定。
+     */
+    @Data
+    public static class ExecutionTimeoutConfig {
+
+        /**
+         * 执行超时开关，默认关闭，向后兼容。
+         * 开启依赖外层 {@code sql-circuit-breaker.enabled=true}（同一自动配置加载）。
+         */
+        private boolean enabled = false;
+
+        /**
+         * 生效的 SQL 类型；null/空列表 = 全部（SELECT/INSERT/UPDATE/DELETE）。超时阈值复用当前 SQL
+         * 解析后的熔断 timeout-ms（ThreadLocal > 方法注解 > 接口注解 > 全局配置）。
+         * 注意 MySQL 对 DML 的 queryTimeout 中断依赖驱动版本（best-effort），见 README 4.10。
+         */
+        private List<String> types;
     }
 }
